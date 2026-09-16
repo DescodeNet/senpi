@@ -12,6 +12,8 @@
 
 ### Fixed
 
+- The startup spinner is drawn the moment interactive startup begins instead of after a 120ms grace timer. That timer could not fire while the synchronous extension imports it was meant to cover were running, so on a real terminal the first frame appeared only once the whole load was done (measured: first byte at 2.27s, one frame before the TUI took over) and the load ran on a blank screen. ([oh-my-openagent#8371](https://github.com/code-yeongyu/oh-my-openagent/issues/8371))
+
 ### Removed
 
 ## [2026.9.16-2] - 2026-09-16
