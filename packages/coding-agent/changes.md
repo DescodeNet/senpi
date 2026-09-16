@@ -1,5 +1,23 @@
 # Local fork changes
 
+## 2026-09-16 - Declare the grammar runtime the bundled agent needs (senpi#1685)
+
+### What changed
+
+- `packages/coding-agent/package.json`: declares the pinned `web-tree-sitter` dependency at the same exact version `packages/agent/package.json` requires.
+
+### Why
+
+- The agent workspace is bundled into the published package, so every external dependency it needs at runtime has to be declared here too, or an npm install resolves the bundled copy against nothing. The structural read's grammar engine loads that runtime on the first JavaScript read; without the declared edge the published CLI would silently fall back to the heuristic scan. `packages/coding-agent/test/workspace-dependencies.test.ts` is the policy that requires it.
+
+### Why an extension could not handle it
+
+- Published dependency edges are resolved at install time, before any extension exists.
+
+### Expected merge conflict zones
+
+- LOW: the `dependencies` block in `packages/coding-agent/package.json`.
+
 ## 2026-09-16 - Transient kernelTools on ExtensionContext (#1647)
 
 ### What changed

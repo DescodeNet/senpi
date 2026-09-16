@@ -1,5 +1,23 @@
 # core/tools changes
 
+## Default reads consult the frozen fold engine for their language (2026-09-16)
+
+### What changed
+
+- `packages/coding-agent/src/core/tools/read.ts`: the default summary path awaits `prepareReadFolder` for the resolved absolute path before composing the summary, and re-checks the abort flag afterwards. Explicit offset/limit rereads, truncated reads and unselected languages are unaffected: the prepared folder is the injected folder itself unless the frozen selection binds that language to the grammar engine.
+
+### Why
+
+- #1685 freezes JavaScript structural reads on a grammar the engine loads lazily, on the first structural read for that language. The read tool is the only place that knows the path being read, so it is where the grammar load belongs; a missing or unusable grammar returns the same folder the tool already had.
+
+### Why an extension could not handle it
+
+- The builtin read tool composes its own output, and no extension hook runs between reading the file and composing the default summary.
+
+### Expected merge conflict zones
+
+- LOW: the `createDefaultReadSummary` call site inside `createReadToolDefinition` in `packages/coding-agent/src/core/tools/read.ts`, already fork-owned since the structural read delivery.
+
 ## Bash keeps its process group until the last descendant exits (2026-09-15)
 
 ### What changed
