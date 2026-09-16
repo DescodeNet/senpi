@@ -31,6 +31,8 @@
 
 ### Fixed
 
+- A host tool called from a running JavaScript eval cell now sees that cell's kernel-tool capability on `ExtensionContext.kernelTools`, including the `agent()` bridge a host task tool serves. The capability was entered only around the awaited run chain, while the worker's message loop dispatches host tool calls from outside it, so every real tool call read an empty store and refused kernel-tool grants with `tools_unavailable`. The capability is now entered per host tool call for exactly that call's duration; Python, Ruby and Julia cells still have none, and a call made outside a live cell still reads `undefined` ([#1754](https://github.com/code-yeongyu/senpi/issues/1754), [#1647](https://github.com/code-yeongyu/senpi/issues/1647)).
+
 ### Removed
 
 ## [2026.9.15-2] - 2026-09-15

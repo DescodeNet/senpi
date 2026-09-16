@@ -167,6 +167,9 @@ async function executeCell(
 				void pending.catch((error: unknown) => execution.cancel(error));
 			}),
 		);
+		// Computed before the handler so the cell's capability can be entered per host tool call from the
+		// worker's message loop, which runs outside the `kernelToolsStorage.run` context below (#1754).
+		const kernelTools = jsKernelTools(kernel, invocation.input.language);
 		const runBound = async (): Promise<AgentToolResult<EvalToolDetails>> => {
 			execution.setKernel(kernel);
 			const activeHandler = new CellHandler(kernel, state, {
@@ -179,6 +182,7 @@ async function executeCell(
 					? {}
 					: { artifactPath: join(options.artifactsDir, `eval-${randomUUID()}.log`) }),
 				...(options.imageResizer === undefined ? {} : { imageResizer: options.imageResizer }),
+				...(kernelTools === undefined ? {} : { kernelTools }),
 			});
 			handler = activeHandler;
 			cellManager.markRunning(
@@ -198,7 +202,6 @@ async function executeCell(
 				await execution.wait(Promise.all(state.pendingBridgeCalls));
 			return await handler.finalize(result);
 		};
-		const kernelTools = jsKernelTools(kernel, invocation.input.language);
 		return kernelTools ? await kernelToolsStorage.run(kernelTools, runBound) : await runBound();
 	} catch (error) {
 		if (handler && error instanceof Error && error.name === "CodemodeSessionDisposedError")
