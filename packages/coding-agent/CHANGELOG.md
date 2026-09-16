@@ -8,6 +8,8 @@
 
 ### Changed
 
+- The stream guard now interrupts a message that keeps restating itself in different words, not only one that repeats a paragraph verbatim. A paragraph counts as an echo when its normalized word set overlaps an earlier paragraph of the same message by half, and the guard acts only once at least 8 of the last 12 paragraphs are echoes, so a repeated sentence, a callback, or a closing summary is left alone while a narration loop is cut within a few thousand characters. Paragraphs inside fenced code blocks are ignored, and the earlier text is kept - only the repeated run is dropped before the retry. Measured against 12,499 real assistant messages, the rule matched nothing except two known runaway generations. ([#1330](https://github.com/code-yeongyu/senpi/issues/1330))
+
 - `--help` no longer boots the engine to print a help screen. The usage text and the flags extensions register are answered from a cache of the last launch's flag set (`<agentDir>/cache/help-flags.json`, validated against the engine version and the mtime/size of every extension, settings and trust input, so an upgrade or an edited extension refreshes it); a cache miss loads extensions for their flags only and skips the model runtime, the session and every other resource class. Measured warm on an Apple M4 Pro: 790ms → 28ms on bun and 959ms → 59ms on node for `--help`; a help screen never prompts for project trust and never runs project-local extension code that is not already trusted. ([oh-my-openagent#8371](https://github.com/code-yeongyu/oh-my-openagent/issues/8371))
 
 ### Fixed
