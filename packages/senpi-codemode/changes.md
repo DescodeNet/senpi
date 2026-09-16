@@ -1,5 +1,46 @@
 # senpi-codemode fork changes
 
+## 2026-09-16 - Bind kernel-tools types to the host declaration (senpi#1731)
+
+### What changed
+
+- `src/kernels/js/kernel-tools-types.ts` aliases `KernelToolsInvokeOptions` / `KernelToolsInvokeScope` / `KernelToolsHostScope` from `@code-yeongyu/senpi`'s `KernelToolInvokeOptions` / `KernelToolInvokeScope`, types `KernelToolsCapability` as `ExtensionKernelTools`, and `KERNEL_TOOLS_CAPABILITIES satisfies ExtensionKernelTools["capabilities"]`.
+- `src/tool/run-eval-cell.ts` types the cell capability object with `satisfies ExtensionKernelTools`.
+
+### Why
+
+- Coding-agent owns the public `ExtensionContext.kernelTools` declaration; this package implements it. Importing the host types here is the drift check (#1731).
+
+### Why an extension could not handle it
+
+- The capability object is constructed by the codemode kernel and published onto the host `kernelToolsStorage`; only this package can bind that object to the host type.
+
+### Expected merge conflict zones
+
+- LOW: `src/kernels/js/kernel-tools-types.ts`, `src/tool/run-eval-cell.ts`.
+
+## 2026-09-16 - Call-scoped host-tool policy for kernel-tool invoke (#1731)
+
+### What changed
+
+- `src/kernels/js/kernel-tools-types.ts` adds `KernelToolsInvokeScope`/`KernelToolsHostScope`/`KernelToolsInvokeOptions`, the `KERNEL_TOOLS_CAPABILITIES` marker (`invokeScope: true`) and widens `KernelToolsCapability.invoke` to `(request, options?: AbortSignal | KernelToolsInvokeOptions)`.
+- `src/kernels/js/kernel-tools-host.ts` normalizes the second argument, copies the caller's lists onto the `kernel-tool-invoke` frame only when the call names host tools, and rebuilds the typed refusal (`kernel_tool_host_denied` plus its `details`) from the reply.
+- `src/bridge/kernel-tools-protocol.ts` carries the optional `scope` on `kernel-tool-invoke` and the optional `details` payload on kernel-tool errors.
+- `src/kernels/js/kernel-tools-scope.js` holds the policy (deny wins, allow list refuses everything it does not name, malformed list fails closed) and the refusal factory; `src/kernels/js/kernel-tools-pump.js` puts the scope in the call-scoped bridge store and serializes `details`; `src/kernels/js/worker-core.js` refuses a scoped nested host call before it reaches the bridge.
+- `src/tool/run-eval-cell.ts` publishes `capabilities` on the cell's capability object and forwards the options through `JavaScriptKernel.invokeKernelTool`.
+
+### Why
+
+- A consumer granting a parent's kernel tool to a child with a narrower tool policy had only two options: refuse the grant, or let the closure's nested `tool.<host>()` calls run with the parent's full permissions (#1731). The scope is per call, so the parent's own cells and queue are untouched.
+
+### Why an extension could not handle it
+
+- The refusal must happen inside the JS worker's call-scoped bridge context, between the closure and the host bridge, which only the codemode kernel owns.
+
+### Expected merge conflict zones
+
+- LOW: `src/kernels/js/kernel-tools-*`, `src/bridge/kernel-tools-protocol.ts`, `src/tool/run-eval-cell.ts`.
+
 ## 2026-09-16 - Kernel-tool capability on the worker tool-call path (#1754)
 
 ### What changed

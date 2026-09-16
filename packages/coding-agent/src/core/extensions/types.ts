@@ -89,6 +89,7 @@ import type {
 } from "../tools/index.ts";
 import type { ReadClassifier } from "../tools/read-classifiers.ts";
 import type { McpServerDeclaration } from "./builtin/mcp/config-schema.ts";
+import type { ExtensionKernelTools } from "./kernel-tools-context.ts";
 
 export type { ExecOptions, ExecResult } from "../exec.ts";
 export type { AppKeybinding, KeybindingsManager } from "../keybindings.ts";
@@ -489,19 +490,7 @@ export interface ExtensionContext {
 	 * Transient parent JS kernel-tool capability. Present only while a supported
 	 * JavaScript eval owns the host-tool context; absent on older runtimes.
 	 */
-	readonly kernelTools?: {
-		describe(names: readonly string[]): Promise<unknown>;
-		invoke(
-			request: {
-				name: string;
-				kernel_generation: number;
-				definition_revision: number;
-				args: unknown;
-				call_id: string;
-			},
-			signal?: AbortSignal,
-		): Promise<unknown>;
-	};
+	readonly kernelTools?: ExtensionKernelTools;
 	/** Abort the current agent operation */
 	abort(source?: "user" | "system"): void;
 	/** Whether there are queued messages waiting */

@@ -1,8 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { type AgentToolResult, type ExtensionContext, kernelToolsStorage } from "@code-yeongyu/senpi";
+import {
+	type AgentToolResult,
+	type ExtensionContext,
+	type ExtensionKernelTools,
+	kernelToolsStorage,
+} from "@code-yeongyu/senpi";
 import { DEFAULT_FOREGROUND_WINDOW_SECONDS, defaultCodemodeSettings } from "../config/settings.ts";
-import type { KernelToolsCapability } from "../kernels/js/kernel-tools-types.ts";
+import {
+	KERNEL_TOOLS_CAPABILITIES,
+	type KernelToolsCapability,
+	type KernelToolsDescribeResult,
+} from "../kernels/js/kernel-tools-types.ts";
 import { TIMEOUT_PAUSE_OP, TIMEOUT_RESUME_OP } from "../timeouts/bridge-timeout.ts";
 import { abortError, CellExecution, defaultTimeoutFactory } from "./cell-execution.ts";
 import { CellHandler, type CellState } from "./cell-handler.ts";
@@ -220,11 +229,12 @@ function jsKernelTools(kernel: EvalKernel, language: string): KernelToolsCapabil
 	if (language !== "js") return undefined;
 	if (!("describeKernelTools" in kernel) || typeof kernel.describeKernelTools !== "function") return undefined;
 	const js = kernel as EvalKernel & {
-		describeKernelTools: KernelToolsCapability["describe"];
-		invokeKernelTool: KernelToolsCapability["invoke"];
+		describeKernelTools: (names: readonly string[]) => Promise<KernelToolsDescribeResult>;
+		invokeKernelTool: ExtensionKernelTools["invoke"];
 	};
 	return {
+		capabilities: KERNEL_TOOLS_CAPABILITIES,
 		describe: (names) => js.describeKernelTools(names),
-		invoke: (request, signal) => js.invokeKernelTool(request, signal),
-	};
+		invoke: (request, options) => js.invokeKernelTool(request, options),
+	} satisfies ExtensionKernelTools;
 }

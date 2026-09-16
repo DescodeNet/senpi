@@ -6,7 +6,11 @@
 
 ### Added
 
+- `kernelTools.invoke(request, options?)` accepts a per-call execution scope for the nested host calls the invoked closure makes: `{ scope: { tools: { allow?: string[], deny?: string[] } } }`. While that invocation is active, a `tool.<name>()` outside the scope is refused inside the worker with `kernel_tool_host_denied` carrying `{ tool, call_id, reason: "allow" | "deny" }`: the closure sees a rejected promise, the refusal never reaches the host bridge, and the parent's own cells and queue keep the parent's full tool surface. `deny` wins over `allow`, an `allow` list refuses every host tool it does not name, a malformed list fails closed, and the scope lives only for that call — it is dropped when the call settles (including interrupt and reset) and is never persisted. The second argument still accepts a bare `AbortSignal`, and a call without a scope posts exactly the message it always did. Consumers detect the feature through `kernelTools.capabilities.invokeScope === true`; `KERNEL_TOOLS_CAPABILITIES`, `KernelToolsCapabilities`, `KernelToolsInvokeOptions`, `KernelToolsInvokeScope`, `KernelToolsHostScope`, `KernelToolHostDenial` and `KernelToolHostDenialReason` are exported ([#1731](https://github.com/code-yeongyu/senpi/issues/1731)).
+
 ### Changed
+
+- Kernel-tools types bind to coding-agent's `ExtensionKernelTools` / `KernelToolInvokeOptions` / `KernelToolInvokeScope` (`KERNEL_TOOLS_CAPABILITIES satisfies ExtensionKernelTools["capabilities"]`) so the implementation cannot drift from the host declaration ([#1731](https://github.com/code-yeongyu/senpi/issues/1731)).
 
 ### Fixed
 

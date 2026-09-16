@@ -1,5 +1,24 @@
 # changes
 
+## 2026-09-16 - Type-check the qa scripts
+
+### What changed
+
+- `scripts/tsconfig.json` extends the root config and includes `qa/**/*.ts` (plus `packages/**/*.d.ts` so ambient modules the qa import graph needs stay in program).
+- `scripts/qa/read-summary-build.d.mts`, `scripts/qa/read-summary-packaging.d.mts`, `scripts/qa/read-summary-parity.d.mts`, and `scripts/qa/omp-item2-plugin.d.mts` type the local `.mjs` modules those runners import.
+
+### Why
+
+- Untyped `.mjs` imports were TS7016, and a scripts-only program dropped coding-agent ambient declarations (`*.md`, `bun:sqlite`, turndown), so qa type errors never failed `tsc`.
+
+### Why an extension could not handle it
+
+- Script tsconfig membership and `.d.mts` shims are compile-time inputs; extensions cannot enroll files in `tsc`.
+
+### Expected merge conflict zones
+
+- LOW: `scripts/tsconfig.json` include list; the four `scripts/qa/*.d.mts` shims if those `.mjs` export surfaces change.
+
 ## 2026-09-15 - Follow the current publishing compile recipe (#1639)
 
 ### What changed
