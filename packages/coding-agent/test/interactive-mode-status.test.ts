@@ -732,9 +732,7 @@ describe("InteractiveMode.getWorkingIndicatorOptions", () => {
 			// without touching the meter: the status line carries no tok/s segment.
 			streamingMessage: undefined,
 		};
-		fakeThis.getWorkingTokensPerSecond = (
-			InteractiveMode as any
-		).prototype.getWorkingTokensPerSecond.bind(fakeThis);
+		fakeThis.getWorkingTokensPerSecond = (InteractiveMode as any).prototype.getWorkingTokensPerSecond.bind(fakeThis);
 
 		// When
 		const options = (InteractiveMode as any).prototype.getWorkingIndicatorOptions.call(fakeThis);
@@ -773,9 +771,7 @@ describe("InteractiveMode.getWorkingIndicatorOptions", () => {
 			// without touching the meter: the status line carries no tok/s segment.
 			streamingMessage: undefined,
 		};
-		fakeThis.getWorkingTokensPerSecond = (
-			InteractiveMode as any
-		).prototype.getWorkingTokensPerSecond.bind(fakeThis);
+		fakeThis.getWorkingTokensPerSecond = (InteractiveMode as any).prototype.getWorkingTokensPerSecond.bind(fakeThis);
 
 		// When
 		const options = (InteractiveMode as any).prototype.getWorkingIndicatorOptions.call(fakeThis);
