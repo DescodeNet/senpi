@@ -10,6 +10,8 @@
 
 ### Fixed
 
+- The JavaScript kernel-tool capability now reaches host tools called from inside a running eval cell. A cell that registers `tool(fn)` can hand those functions to its in-process children through `task`/`agent`/`workpool`, because `ExtensionContext.kernelTools` resolves for the duration of each host tool call the cell makes. It was undefined at the dispatch point — the worker's message loop ran outside the `kernelToolsStorage` scope that only covered the awaited run chain — so every grant was refused with `tools_unavailable` and the capability shipped in the previous release could not be used ([#1754](https://github.com/code-yeongyu/senpi/issues/1754)).
+
 ### Removed
 
 ## [2026.9.16] - 2026-09-16
