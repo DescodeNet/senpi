@@ -14,7 +14,7 @@ import { loadFrozenBaseline, loadReadGate } from "./frozen-baseline.ts";
 import { selectLanguages } from "./language-selections.ts";
 import { annotate, compareOmp, retainedSourceExact } from "./oracle.ts";
 import { typescriptOracle } from "./oracle-typescript.ts";
-import { productionCandidate } from "./production-candidate.ts";
+import { heuristicCandidate, productionCandidate } from "./production-candidate.ts";
 import { qualifyEnumeration, qualifySignatures } from "./qualification.ts";
 import { readRawBaseline } from "./raw-baseline.ts";
 import { runReference, tokenize } from "./reference.ts";
@@ -83,8 +83,9 @@ export async function bakeoff(options: BakeoffOptions) {
 		const raw = await readRawBaseline(options.input, entry.file);
 		const rawMs = performance.now() - rawStart;
 		if (frozen && frozen.raw.get(entry.id) !== raw) throw new Error("frozen_raw_output_changed");
+		const defaultRead = await productionCandidate(options.input, entry.file, entry.source);
 		const candidateStart = performance.now();
-		const candidate = await productionCandidate(options.input, entry.file, entry.source);
+		const candidate = heuristicCandidate(entry.file, entry.source);
 		const candidateMs = performance.now() - candidateStart;
 		const wasmStart = performance.now();
 		const wasm = await wasmCandidate(entry.file, entry.source, entry.language);
@@ -109,7 +110,7 @@ export async function bakeoff(options: BakeoffOptions) {
 		writeFileSync(join(out, "omp", `${entry.id}.txt`), ref.text);
 		writeFileSync(join(out, "candidate", `${entry.id}.txt`), candidate.text);
 		if (wasm) writeFileSync(join(out, "wasm-candidate", `${entry.id}.txt`), wasm.text);
-		writeFileSync(join(out, "default-read", `${entry.id}.txt`), candidate.defaultReadText);
+		writeFileSync(join(out, "default-read", `${entry.id}.txt`), defaultRead.defaultReadText);
 		json(`omp/${entry.id}.json`, ref.result);
 		const oracleHidden = new Set(
 			annotation.ranges
@@ -121,6 +122,7 @@ export async function bakeoff(options: BakeoffOptions) {
 			entry,
 			raw,
 			candidate,
+			defaultRead,
 			omp: ref.text,
 			rawMs,
 			candidateMs,
@@ -145,7 +147,8 @@ export async function bakeoff(options: BakeoffOptions) {
 			omp_sha256: sha256(row.omp),
 			candidate_sha256: sha256(row.candidate.text),
 			wasm_candidate_sha256: row.wasm ? sha256(row.wasm.text) : null,
-			default_read_sha256: sha256(row.candidate.defaultReadText),
+			default_read_sha256: sha256(row.defaultRead.defaultReadText),
+			default_read_engine: row.defaultRead.engineId,
 		})),
 	);
 	const tokens = tokenize(
@@ -154,7 +157,7 @@ export async function bakeoff(options: BakeoffOptions) {
 			row.raw,
 			row.omp,
 			row.candidate.text,
-			row.candidate.defaultReadText,
+			row.defaultRead.defaultReadText,
 			row.wasm?.text ?? row.raw,
 		]),
 		reference.tokenizer,
