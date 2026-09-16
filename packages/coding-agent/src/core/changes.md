@@ -1,5 +1,27 @@
 # changes
 
+## 2026-09-16 - Throughput retry branch and its settings withdrawn (senpi#1759)
+
+### What changed
+
+- `packages/coding-agent/src/core/agent-session.ts`: the `isProviderStreamThroughputDegradedError` branch in `_handleRetryableError`, the `stream_throughput_degraded` session event and the `"throughput"` arm of the provider-error log kind are removed. Stalls, refusals and the 429 tiers are unchanged.
+- `packages/coding-agent/src/core/settings-manager.ts`: `getAgentStreamThroughputOptions()` removed.
+- `packages/coding-agent/src/core/retry-fallback/settings.ts`: `minThroughputTokensPerSecond`, `throughputWindowMs` and `throughputGraceMs` removed from `ProviderRetrySettings`.
+- `packages/coding-agent/src/core/sdk.ts`: the `streamThroughput` wiring next to `timeoutMs` / `streamStartTimeoutMs` removed.
+
+### Why
+
+- The agent-loop rate guard those knobs configured aborted healthy turns and was withdrawn (senpi#1759). With no such verdict reaching the session, the retry branch is unreachable and the settings configure nothing.
+
+### Why an extension could not handle it
+
+- Retry budget, fallback chain and turn termination live in `AgentSession`, and the settings surface is host-owned; an extension can neither add nor remove either.
+
+### Expected merge conflict zones
+
+- MEDIUM: the retry class chain in `_handleRetryableError` is back to stall / refusal / 429 tiers only, so an upstream edit there applies without the fork-local throughput arm.
+- LOW: the settings getter and the `ProviderRetrySettings` fields.
+
 ## 2026-09-16 - Stalled turns end with recovery guidance (senpi#1740)
 
 ### What changed

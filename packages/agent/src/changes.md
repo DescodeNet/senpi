@@ -1,3 +1,25 @@
+## 2026-09-16 - Stream throughput guard withdrawn; the loop bounds silence only (senpi#1759)
+
+### What changed
+
+- `packages/agent/src/stream-throughput-watchdog.ts` is deleted.
+- `packages/agent/src/agent-loop.ts`: the assistant event reader no longer builds a rate watchdog, records streamed units or aborts the request controller on a rate verdict. It is back to the two silence bounds - the stream-start bound until the first event, and the inter-event idle bound.
+- `packages/agent/src/types.ts`: `AgentLoopConfig.streamThroughput` removed.
+- `packages/agent/src/agent.ts`: `AgentOptions.streamThroughput`, the public field and its forwarding into every loop config removed.
+- `packages/agent/src/index.ts`: the watchdog module's exports removed.
+
+### Why
+
+- The floor failed healthy turns: a stream measured at 6.1 tok/s over the 20s window had its request aborted mid tool call, and thinking-heavy models and gateways that batch several tokens into one delta routinely sustain rates under the shipped 8 tok/s floor. Aborting the controller also discarded the partial answer instead of delivering it slowly. The guard is withdrawn rather than retuned, so these files match their pre-guard shape again.
+
+### Why an extension could not handle it
+
+- The bound lived inside the agent loop's stream reader, which no extension can observe or replace; removing it likewise has to happen here.
+
+### Expected merge conflict zones
+
+- LOW: `createAssistantEventReader` / `readNextAssistantEvent` in `packages/agent/src/agent-loop.ts` are back to the upstream shape, so an upstream edit to the start or idle bounds now applies cleanly.
+
 ## 2026-09-16 - Forward thinking live in the empty-assistant recovery wrapper (#1733)
 
 ### What changed

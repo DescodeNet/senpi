@@ -1,3 +1,21 @@
+## Throughput-degraded classification withdrawn (2026-09-16)
+
+### What changed
+
+- `packages/ai/src/utils/retry.ts`: the `"provider stream throughput degraded"` alternation is removed from `RETRYABLE_PROVIDER_ERROR_PATTERN`, and `isProviderStreamThroughputDegradedError` with its anchored pattern is deleted. The silence-stall classifiers and `describeProviderStallForUser` are untouched.
+
+### Why
+
+- The agent loop no longer produces that verdict (senpi#1759): the rate guard that raised it failed healthy turns and was withdrawn, so a classifier for a message that can no longer occur is dead weight.
+
+### Why an extension could not handle it
+
+- Retry and fallback admission is decided from this classifier inside `AgentSession`; an extension observes the turn only after that decision.
+
+### Expected merge conflict zones
+
+- LOW: the retryable list and the stall-classifier block in `packages/ai/src/utils/retry.ts` are back to carrying silence classes only.
+
 ## Plain-language provider-stall copy (2026-09-16)
 
 ### What changed

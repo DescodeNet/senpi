@@ -1,3 +1,22 @@
+## 2026-09-16 - Live tok/s removed from the working line (senpi#1759)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/working-status.ts`: the optional live-rate parameter and `formatWorkingRateSegment` are removed; the suffix is again `(<elapsed> - <key> to interrupt)`.
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: the `StreamRateMeter` field, its rebuild at assistant `message_start`, the `message_update` unit recording, `getWorkingTokensPerSecond()` and the `stream_throughput_degraded` notice box are removed.
+
+### Why
+
+- The readout existed only to make the agent-loop rate verdict observable while it was measured. That guard aborted healthy turns and was withdrawn (senpi#1759), leaving a per-delta rate as noise on every turn; end-of-turn rate is still reported by the builtin TPS extension.
+
+### Why an extension could not handle it
+
+- The working line and its animation frames are owned by interactive mode; extensions can only post notifications after the turn ends.
+
+### Expected merge conflict zones
+
+- LOW: the working-status suffix helper and the `message_start` / `message_update` cases in `interactive-mode.ts` are back to their pre-guard shape.
+
 ## 2026-09-16 - Stall transcripts read as stalls (senpi#1740)
 
 ### What changed
