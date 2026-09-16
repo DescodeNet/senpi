@@ -188,6 +188,38 @@ describe("kernel-tool invoke scope", () => {
 		});
 	});
 
+	it("settles a scoped nested wait exactly once when the parent is interrupted", async () => {
+		await withScopedParent(async (harness) => {
+			const invoke = harness.invoke("fetch_path", "interrupt-1", scope({ allow: ["read"] }));
+			const read = await harness.nextHostCall();
+			expect(read.toolName).toBe("read");
+			let settles = 0;
+			const tracked = invoke.then(
+				(value) => {
+					settles += 1;
+					return { ok: true as const, value };
+				},
+				(error: unknown) => {
+					settles += 1;
+					return {
+						ok: false as const,
+						code: error instanceof Error && "code" in error ? String(error.code) : "unknown",
+					};
+				},
+			);
+			await harness.kernel.interrupt("verify-scoped-interrupt");
+			await expect(bounded(harness.parent, "parent cell")).resolves.toMatchObject({
+				ok: false,
+				error: { message: "JS cell interrupted: verify-scoped-interrupt" },
+			});
+			await expect(bounded(tracked, "scoped nested invoke")).resolves.toMatchObject({
+				ok: false,
+				code: "kernel_tool_stale",
+			});
+			expect(settles).toBe(1);
+		});
+	});
+
 	it("leaves the parent's own cell, queue and later cells unaffected by a refusal", async () => {
 		await withScopedParent(async (harness) => {
 			const queued = harness.kernel.run({
