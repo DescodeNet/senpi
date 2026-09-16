@@ -13,7 +13,11 @@ import {
 } from "./kernel-contract.ts";
 import { kernelToolError } from "./kernel-tools-errors.ts";
 import { KernelToolHostPump } from "./kernel-tools-host.ts";
-import type { KernelToolsDescribeResult, KernelToolsInvokeRequest } from "./kernel-tools-types.ts";
+import type {
+	KernelToolsDescribeResult,
+	KernelToolsInvokeOptions,
+	KernelToolsInvokeRequest,
+} from "./kernel-tools-types.ts";
 import { type JavaScriptKernelOptions, LocalModuleLoader } from "./local-module-loader.ts";
 import { terminateProcessTrees } from "./process-tree-host.ts";
 import { JavaScriptRunQueue, type PendingJavaScriptRun, stoppedResult } from "./run-queue.ts";
@@ -72,8 +76,11 @@ export class JavaScriptKernel {
 		return this.#kernelTools.describe(names);
 	}
 
-	invokeKernelTool(request: KernelToolsInvokeRequest, signal?: AbortSignal): Promise<unknown> {
-		return this.#kernelTools.invoke(request, signal);
+	invokeKernelTool(
+		request: KernelToolsInvokeRequest,
+		options?: AbortSignal | KernelToolsInvokeOptions,
+	): Promise<unknown> {
+		return this.#kernelTools.invoke(request, options);
 	}
 
 	async run(input: JavaScriptRunInput): Promise<ResultMessage> {

@@ -160,7 +160,12 @@ describe("kernel-tool invoke scope", () => {
 			const invoke = harness.invoke("store_path", "plain-1");
 			const write = await harness.nextHostCall();
 			expect(write).toMatchObject({ toolName: "write", args: { path: "demo.txt", content: "body" } });
-			harness.kernel.deliverToolReply({ type: "tool-reply", callId: write.callId, ok: true, value: "/tmp/demo.txt" });
+			harness.kernel.deliverToolReply({
+				type: "tool-reply",
+				callId: write.callId,
+				ok: true,
+				value: "/tmp/demo.txt",
+			});
 			await expect(invoke).resolves.toBe("/tmp/demo.txt");
 		});
 	});
@@ -173,7 +178,12 @@ describe("kernel-tool invoke scope", () => {
 			const invoke = harness.invoke("store_path", "unscoped-2");
 			const write = await harness.nextHostCall();
 			expect(write.toolName).toBe("write");
-			harness.kernel.deliverToolReply({ type: "tool-reply", callId: write.callId, ok: true, value: "/tmp/demo.txt" });
+			harness.kernel.deliverToolReply({
+				type: "tool-reply",
+				callId: write.callId,
+				ok: true,
+				value: "/tmp/demo.txt",
+			});
 			await expect(invoke).resolves.toBe("/tmp/demo.txt");
 		});
 	});

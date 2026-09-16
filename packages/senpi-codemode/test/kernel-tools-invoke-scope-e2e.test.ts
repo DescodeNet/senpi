@@ -4,7 +4,13 @@ import type { KernelToHostMessage } from "../src/bridge/protocol.ts";
 import { JavaScriptKernel } from "../src/kernels/js/context-manager.ts";
 import type { KernelToolsCapability } from "../src/kernels/js/kernel-tools-types.ts";
 import { createEvalTool } from "../src/tool/eval-tool.ts";
-import type { EvalKernel, EvalKernelManager, EvalLanguage, EvalToolDetails } from "../src/tool/types.ts";
+import type {
+	EvalKernel,
+	EvalKernelManager,
+	EvalLanguage,
+	EvalToolCallSummary,
+	EvalToolDetails,
+} from "../src/tool/types.ts";
 import { fakeExtensionContext } from "./eval/fakes.ts";
 
 type ProbeArgs = { readonly path: string };
@@ -56,6 +62,10 @@ function textResult(text: string): AgentToolResult<unknown> {
 function outputText(cell: AgentToolResult<EvalToolDetails>): string {
 	const part = cell.content[0];
 	return part?.type === "text" ? part.text : "";
+}
+
+function byName(left: { readonly name: string }, right: { readonly name: string }): number {
+	return left.name.localeCompare(right.name);
 }
 
 function deniedRecord(error: unknown): DeniedRecord {
@@ -182,7 +192,12 @@ describe("kernel-tool invoke scope on the real worker tool-call path", () => {
 		]);
 		expect(hostCalls).toEqual(["probe", "read"]);
 		expect(cell.details.isError).toBeFalsy();
-		expect(cell.details.toolCalls[0]).toMatchObject({ name: "probe", ok: true });
+		// The nested read settles before the probe that drove it, so compare the captured set, not order.
+		const captured = cell.details.toolCalls.map((call: EvalToolCallSummary) => ({ name: call.name, ok: call.ok }));
+		expect(captured.sort(byName)).toEqual([
+			{ name: "probe", ok: true },
+			{ name: "read", ok: true },
+		]);
 		expect(outputText(cell)).toContain("kernel_tool_host_denied");
 		expect(ctx.kernelTools).toBeUndefined();
 	});

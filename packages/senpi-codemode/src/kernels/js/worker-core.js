@@ -1,6 +1,7 @@
 import { kernelToolCallContext } from "./kernel-tools-context.js";
 import { kernelToolError } from "./kernel-tools-errors.js";
 import { createKernelToolPump } from "./kernel-tools-pump.js";
+import { hostDeniedError, hostToolRefusal } from "./kernel-tools-scope.js";
 import { JsWorkerRuntime } from "./worker-runtime.js";
 
 // Mirrors INTERRUPT_ACK_OP and CHILD_LIFECYCLE_OP in src/bridge/reserved.ts (this worker file cannot import TypeScript).
@@ -59,6 +60,12 @@ export function createWorkerCore(transport, options) {
 		const nested = kernelToolCallContext.getStore();
 		if (!nested && activeCell?.interruption) throw activeCell.interruption;
 		if (nested?.signal.aborted) throw nested.signal.reason;
+		// A scoped kernel-tool call is refused here, before anything reaches the host bridge, so the
+		// closure sees a rejected promise and the parent's own cells keep their full tool surface (#1731).
+		if (nested) {
+			const refusal = hostToolRefusal(nested.scope, toolName);
+			if (refusal) throw hostDeniedError(toolName, nested.callId, refusal);
+		}
 		const bag = nested?.pendingTools ?? pendingTools;
 		const callId = `js-${crypto.randomUUID()}`;
 		const promise = new Promise((resolve, reject) => bag.set(callId, { resolve, reject }));

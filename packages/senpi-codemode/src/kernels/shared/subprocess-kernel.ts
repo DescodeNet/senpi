@@ -1,6 +1,7 @@
 import type { HostToKernelMessage, KernelToHostMessage } from "../../bridge/protocol.ts";
 import { decodeBridgeFrame, encodeBridgeFrame, isKernelToHostMessage } from "../../bridge/protocol.ts";
 import type { KernelInterruptHandle } from "../../tool/types.ts";
+import type { KernelToolsInvokeOptions } from "../js/kernel-tools-types.ts";
 import { rejectKernelToolsUnavailable } from "../kernel-tools-unavailable.ts";
 import { applySessionEnvironment } from "../session-env.ts";
 import type { KernelResult, KernelRunInput, SubprocessKernelOptions, ToolCallMessage } from "./subprocess-contract.ts";
@@ -78,7 +79,7 @@ export class SubprocessKernel {
 		return rejectKernelToolsUnavailable();
 	}
 
-	invokeKernelTool(_request: unknown, _signal?: AbortSignal): Promise<never> {
+	invokeKernelTool(_request: unknown, _options?: AbortSignal | KernelToolsInvokeOptions): Promise<never> {
 		return rejectKernelToolsUnavailable();
 	}
 

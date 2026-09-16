@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { hostDeniedError, hostToolRefusal } from "../src/kernels/js/kernel-tools-scope.js";
 
-/** Policy seam for https://github.com/code-yeongyu/senpi/issues/1731. */
+/** Call-scoped host-tool policy for kernel-tool invoke (https://github.com/code-yeongyu/senpi/issues/1731). */
 describe("kernel-tool call scope policy", () => {
 	it("permits every host tool when the call carries no tool scope", () => {
 		expect(hostToolRefusal(undefined, "write")).toBeNull();
@@ -30,6 +30,11 @@ describe("kernel-tool call scope policy", () => {
 	it("matches host tool names exactly", () => {
 		expect(hostToolRefusal({ tools: { deny: ["write"] } }, "Write")).toBeNull();
 		expect(hostToolRefusal({ tools: { allow: ["read"] } }, "Read")).toBe("allow");
+	});
+
+	it("fails closed on a malformed list instead of widening the scope", () => {
+		expect(hostToolRefusal({ tools: { deny: "write" } }, "read")).toBe("deny");
+		expect(hostToolRefusal({ tools: { allow: "read" } }, "read")).toBe("allow");
 	});
 
 	it("builds a typed refusal carrying the tool, the invoking call id and the reason", () => {

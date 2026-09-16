@@ -1,6 +1,6 @@
-import type { KernelToolErrorCode } from "./kernel-tools-errors.ts";
+import type { KernelToolErrorCode, KernelToolHostDenial, KernelToolHostDenialReason } from "./kernel-tools-errors.ts";
 
-export type { KernelToolErrorCode };
+export type { KernelToolErrorCode, KernelToolHostDenial, KernelToolHostDenialReason };
 
 export type KernelToolDescriptor = {
 	readonly name: string;
@@ -31,9 +31,36 @@ export type KernelToolsDescribeResult = {
 	readonly results: readonly KernelToolsDescribeEntry[];
 };
 
+/**
+ * Host tools a kernel-tool invocation's nested calls may reach: `allow` narrows to exactly those
+ * names, `deny` refuses the named ones, and `deny` wins where both name the same tool.
+ */
+export type KernelToolsHostScope = {
+	readonly allow?: readonly string[];
+	readonly deny?: readonly string[];
+};
+
+/** Execution scope for one `invoke`; never persisted, dropped when that call settles (#1731). */
+export type KernelToolsInvokeScope = {
+	readonly tools?: KernelToolsHostScope;
+};
+
+export type KernelToolsInvokeOptions = {
+	readonly signal?: AbortSignal;
+	readonly scope?: KernelToolsInvokeScope;
+};
+
+/** Stable capability markers a consumer gates on before sending an option this runtime may not know. */
+export type KernelToolsCapabilities = {
+	readonly invokeScope: true;
+};
+
+export const KERNEL_TOOLS_CAPABILITIES: KernelToolsCapabilities = Object.freeze({ invokeScope: true });
+
 export type KernelToolsCapability = {
+	readonly capabilities: KernelToolsCapabilities;
 	describe(names: readonly string[]): Promise<KernelToolsDescribeResult>;
-	invoke(request: KernelToolsInvokeRequest, signal?: AbortSignal): Promise<unknown>;
+	invoke(request: KernelToolsInvokeRequest, options?: AbortSignal | KernelToolsInvokeOptions): Promise<unknown>;
 };
 
 export const KERNEL_TOOLS_UNSUPPORTED = {
