@@ -4,17 +4,20 @@ import type { ReadFolder, ReadFolderInput, ReadFolderResult } from "./types.ts";
 
 export * from "./types.ts";
 
-/** Frozen row-17 selection, not a runtime registry that can enable unmeasured grammars. */
+/** Frozen measured selection, not a runtime registry that can enable unmeasured grammars. */
 export const READ_FOLDER_SELECTION = Object.freeze({
 	head: "0830b8c466e1f0689fa7f6f33cb7cfcd188b5407",
 	selectionSha256: "b10b790182c83603cdc66f7e0d3b88464456ad49a45e621aea140d9c033f13a6",
-	wasm: false,
-	rawReasons: Object.freeze({ ts: "wasm_candidate_pending_owner", js: "wasm_candidate_pending_owner" } as const),
+	wasm: true,
+	rawReasons: Object.freeze({
+		ts: "wasm_candidate_below_threshold",
+		tsx: "wasm_candidate_below_threshold",
+	} as const),
 	languages: Object.freeze({
 		ts: "raw",
-		js: "raw",
+		js: "wasm",
 		json: "heuristic",
-		tsx: "unsupported",
+		tsx: "raw",
 		python: "unsupported",
 		rust: "unsupported",
 		go: "unsupported",

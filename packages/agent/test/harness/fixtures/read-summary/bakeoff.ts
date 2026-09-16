@@ -199,8 +199,8 @@ export async function bakeoff(options: BakeoffOptions) {
 			omp: row.referenceComparison,
 		})),
 	});
-	const enumeration = qualifyEnumeration(join(out, "adversarial-enumeration.json"));
-	const adversarial = qualifySignatures();
+	const enumeration = await qualifyEnumeration(join(out, "adversarial-enumeration.json"));
+	const adversarial = await qualifySignatures();
 	json("adversarial-boundaries.json", adversarial);
 	const selections = selectLanguages(samples, corpus.max_embedded_delta_bytes, adversarial);
 	const csv = [
