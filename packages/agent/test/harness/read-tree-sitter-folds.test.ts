@@ -10,7 +10,12 @@ import {
 	TREE_SITTER_FOLDER_ID,
 } from "../../src/harness/utils/read-folders/tree-sitter/engine.ts";
 import type { TreeSitterLanguage } from "../../src/harness/utils/read-folders/tree-sitter/syntax.ts";
-import type { ReadFolder, ReadFolderResult, ReadFoldRange } from "../../src/harness/utils/read-folders/types.ts";
+import type {
+	ReadFolder,
+	ReadFolderInput,
+	ReadFolderResult,
+	ReadFoldRange,
+} from "../../src/harness/utils/read-folders/types.ts";
 import { typescriptOracle } from "./fixtures/read-summary/oracle-typescript.ts";
 import { type Fold, validBoundaries } from "./fixtures/read-summary/scorer.ts";
 
@@ -165,7 +170,7 @@ describe("tree-sitter fold boundaries (#1685)", () => {
 		const injected: ReadFolder = Object.freeze({
 			id: "injected",
 			version: "1",
-			fold: ({ text }) => ({ status: "parsed" as const, text, ranges: [] }),
+			fold: ({ text }: ReadFolderInput) => ({ status: "parsed" as const, text, ranges: [] }),
 		});
 		// Then the selection decides eligibility, and the caller keeps exactly the folder it passed.
 		expect(await prepareReadFolder("input.js", injected, { cache: false })).toBe(injected);
