@@ -17,6 +17,6 @@ export function assertShippedKernelToolsSurface(ctx: ExtensionContext): void {
 	if (!kernelTools) return;
 	void kernelTools.invoke(request, { scope: { tools: { deny: ["write"] } } });
 	void kernelTools.invoke(request, AbortSignal.abort());
-	const invokeScope: true = kernelTools.capabilities.invokeScope;
+	const invokeScope: boolean = kernelTools.capabilities.invokeScope;
 	void invokeScope;
 }

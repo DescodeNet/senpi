@@ -8,7 +8,7 @@
 
 ### Changed
 
-- `ExtensionContext.kernelTools` is typed as the shipped kernel-tools surface: `invoke(request, options?)` accepts `{ signal?, scope? }` (a bare `AbortSignal` still works) and `capabilities.invokeScope` is present. `ExtensionKernelTools` is senpi-codemode's `KernelToolsCapability`, so the two cannot drift ([#1731](https://github.com/code-yeongyu/senpi/issues/1731)).
+- `ExtensionContext.kernelTools` is typed as the shipped kernel-tools surface: `invoke(request, options?)` accepts `{ signal?, scope? }` (a bare `AbortSignal` still works) and `capabilities.invokeScope` is present. Coding-agent owns `ExtensionKernelTools`, `KernelToolInvokeOptions`, and `KernelToolInvokeScope`; senpi-codemode binds its implementation to those types so they cannot drift ([#1731](https://github.com/code-yeongyu/senpi/issues/1731)).
 
 ### Fixed
 
