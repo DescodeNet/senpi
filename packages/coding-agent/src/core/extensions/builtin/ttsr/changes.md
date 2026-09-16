@@ -20,6 +20,7 @@
 - `test/ttsr/detector-collapse-near-duplicates.test.ts` replays the sanitized incident fixture (`fixtures/incident-near-duplicate-narration.txt`), pins chunk-boundary independence, and pins the negatives: distinct multi-sentence prose, a minority of echoes in the window, the long healthy prefix, fenced code, and tool-stream exclusion.
 - `test/ttsr/collapse-test-inputs.ts` `buildHealthyPrefix` now composes varied vocabulary. Its previous sentences differed only by a counter, so every paragraph normalized to the same token set - healthy prose for a byte-exact rule, a narration loop for a normalized one.
 - `test/ttsr/detector-collapse-paragraphs.test.ts` `narration()` now emits seven lexically distinct steps instead of one template plus a counter, so the exact-repeat assertions still test exact repetition. The assertions themselves are unchanged.
+- Real-CLI QA ships as `senpi-qa` mock-loop scenario `ttsr-near-duplicate-loop`: fifteen paraphrases of one action, none byte-identical, streamed from the local fake model server. It asserts the abort, the truncated persisted message, the `collapse-repetition` interrupt in the recovery request, and the recovered answer.
 - LOW: `detectors/collapse.ts` (one chain entry) and the two test-input fixtures; no existing detector thresholds are changed.
 
 ## 2026-09-03 - Within-message paragraph repetition
