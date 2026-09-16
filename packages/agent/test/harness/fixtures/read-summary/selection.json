@@ -29,7 +29,7 @@
     "read-folders/header-protection.ts": "9bd0bea5dfe20011c8d4235563454a2af1064c95537c4ed0a807d070954a9777",
     "read-folders/lexical-context.ts": "e3816078bc60c25e07ceb029d49ceb9d83d55968e2a1e9fa278ec5a4bf9bcb3f",
     "read-folders/lexical-spans.ts": "c7ba988487972d9e39427e5faf0120b3bf787cb48ffa32cf8123ce54bdbdbd93",
-    "read-folders/prepare.ts": "f8155776af67d5e8c16f7fca099111fd9d741c85e68743ad809558a0a7b50ebb",
+    "read-folders/prepare.ts": "3ec2d553ea1877cc04e12e730b7c9a0d7b2d5e4d08a60980a1c8396eb338bfd2",
     "read-folders/tree-sitter/engine.ts": "b2e06b13e5c42efbd6d7128d0c737f2cbc890693d5a332dac88b15e670195c05",
     "read-folders/tree-sitter/grammar-assets.ts": "66d1db00774c8de2e19b0c8ea8711feea5d4f2daac991697a63d70a6b2ad74ec",
     "read-folders/tree-sitter/syntax.ts": "21ec7601f431b635ccad1dce3e089875e2bec12db2f9ac2d8af62d34bda806ef",
@@ -44,7 +44,7 @@
     "counterexamples": [],
     "sha256": "48140de2438011b420a233f2790c302d186ad633ac5811f57bd3bc7c34f6cb47"
   },
-  "tree_sha": "71135f390d6ea09ceb2ab929ed952286d623f331",
+  "tree_sha": "397d6b493c1f1377c40edb57220d3171f2125a7e",
   "binary_measurement": "omp-item1 --case compiled-parity (release graph, all shipped targets)",
   "gate_status": "OQ1_unresolved_defaults_used",
   "gate_receipt": {
@@ -105,9 +105,9 @@
     ]
   },
   "status": "frozen_measurement_with_per_language_raw_fallbacks",
-  "head_sha": "73d3bbbccc255dd979883dd464765607fb813ee8",
-  "startedAt": "2026-09-16T17:35:19.549Z",
-  "finishedAt": "2026-09-16T17:35:20.741Z",
+  "head_sha": "93fb9b0a7f7422b2ee7641585ef395d671c84ab5",
+  "startedAt": "2026-09-16T17:40:34.938Z",
+  "finishedAt": "2026-09-16T17:40:35.877Z",
   "corpus_sha256": "7341450565d0c56ac07ef676eb6e43a79cab7a012fefe73612a7e2cab1ba43fa",
   "annotations_sha256": "c3dc623bd0418fd7b8052e9c8418f84f5d3bff4e08022c309600de286e8f5133",
   "adversarial_boundaries_sha256": "ee70ae8a6d8e280c5d7d02623a7945455b3b761978caee9bf02b8020865ca4d6",
