@@ -7,7 +7,10 @@ export function lcg(seed: number): () => number {
 }
 
 const ONSETS = "b,br,c,ch,d,dr,f,fl,g,gl,h,j,k,l,m,n,p,pl,qu,r,s,sh,t,tr,v,w".split(",");
-const RIMES = "ade,ane,ark,eal,ean,eed,ell,ent,ess,ift,ilm,ind,ock,oil,old,ond,oom,ore,orn,ount,ove,udge,ule,urn,ust,yle".split(",");
+const RIMES =
+	"ade,ane,ark,eal,ean,eed,ell,ent,ess,ift,ilm,ind,ock,oil,old,ond,oom,ore,orn,ount,ove,udge,ule,urn,ust,yle".split(
+		",",
+	);
 
 export const HEALTHY_WORD_COUNT = 26 * 26;
 

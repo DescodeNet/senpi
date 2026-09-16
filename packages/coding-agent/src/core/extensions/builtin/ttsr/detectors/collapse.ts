@@ -1,11 +1,7 @@
 import { FixedRing, type ScalarEntry, ScalarScanner } from "../stream-utils.ts";
 import type { DetectorContext, DetectorMatch, StreamDetector } from "../types.ts";
 import { createLineCycleState, type LineCycleState, updateLineCycles } from "./collapse-lines.ts";
-import {
-	createNearDuplicateState,
-	type NearDuplicateState,
-	updateNearDuplicates,
-} from "./collapse-near-duplicates.ts";
+import { createNearDuplicateState, type NearDuplicateState, updateNearDuplicates } from "./collapse-near-duplicates.ts";
 import {
 	createParagraphRepeatState,
 	type ParagraphRepeatState,

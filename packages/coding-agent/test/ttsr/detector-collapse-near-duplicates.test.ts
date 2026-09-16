@@ -124,9 +124,13 @@ describe("near-duplicate paragraph frequency detector", () => {
 
 	it("does not count paragraphs inside fenced code blocks", () => {
 		const block = (index: number) =>
-			["```ts", `export function handler${index}(input: string): string {`, "\treturn input.trim();", "}", "```"].join(
-				"\n",
-			);
+			[
+				"```ts",
+				`export function handler${index}(input: string): string {`,
+				"\treturn input.trim();",
+				"}",
+				"```",
+			].join("\n");
 		const fenced = joinParagraphs(Array.from({ length: 24 }, (_, index) => block(index)));
 		expect(perChar(fenced).match).toBeNull();
 	});
