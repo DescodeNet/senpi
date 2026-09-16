@@ -73,9 +73,16 @@ describe("read-summary compile contract", () => {
 	it("keeps the grammar engine's dependency behind the lazy read path (#1685)", async () => {
 		// Given the module a default read imports only for a language frozen to the grammar engine.
 		const folder = "packages/agent/src/harness/utils/read-folders/";
+		// Bun embeds the packaged asset through its file attribute; esbuild only needs to see the edge.
+		const wasmAssetPlugin = {
+			name: "wasm-asset",
+			setup(bundler) {
+				bundler.onResolve({ filter: /\.wasm$/ }, (args) => ({ path: args.path, external: true }));
+			},
+		};
 		const result = await bundle({ absWorkingDir: build.repository, entryPoints: [`${folder}prepare.ts`],
 			bundle: true, platform: "node", format: "esm", outdir: "unused", write: false, metafile: true,
-			external: ["web-tree-sitter"], loader: { ".wasm": "file" } });
+			external: ["web-tree-sitter"], plugins: [wasmAssetPlugin] });
 		const inputs = Object.keys(result.metafile.inputs).filter((path) => !path.endsWith(".wasm"));
 		// When bundling; then the engine is reachable and no source outside the folder enters the graph.
 		assert(inputs.includes(`${folder}tree-sitter/engine.ts`), JSON.stringify(inputs));

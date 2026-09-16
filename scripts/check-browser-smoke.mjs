@@ -65,7 +65,7 @@ const treeSitterEngineMarker = "read-folders/tree-sitter/engine";
 const lazyTreeSitterEnginePlugin = {
 	name: "lazy-tree-sitter-engine",
 	setup(build) {
-		build.onResolve({ filter: /read-folders[/\\]tree-sitter[/\\]engine\.ts$/ }, (args) => {
+		build.onResolve({ filter: /[/\\]tree-sitter[/\\]engine\.ts$/ }, (args) => {
 			if (args.kind !== "dynamic-import") return;
 			if (!normalizePath(args.importer).includes("packages/agent/src/harness/utils/read-folders/")) return;
 			return { path: args.path, external: true };
