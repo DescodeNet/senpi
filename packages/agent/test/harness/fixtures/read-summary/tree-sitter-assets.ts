@@ -4,7 +4,12 @@ import { packagedAssetDirectory } from "../../../../src/harness/utils/read-folde
 import { sha256 } from "./scorer.ts";
 
 type Provenance = {
-	readonly runtime: { readonly file: string; readonly package: string; readonly version: string; readonly sha256: string };
+	readonly runtime: {
+		readonly file: string;
+		readonly package: string;
+		readonly version: string;
+		readonly sha256: string;
+	};
 	readonly grammars: readonly {
 		readonly language: string;
 		readonly file: string;

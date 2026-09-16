@@ -97,7 +97,8 @@ export async function loadTreeSitterFolder(
 	const load = () => loadParser(language, options);
 	const loaded = await (options.cache === false
 		? load()
-		: (grammars.get(language) ?? (() => {
+		: (grammars.get(language) ??
+			(() => {
 				const pending = load();
 				grammars.set(language, pending);
 				return pending;

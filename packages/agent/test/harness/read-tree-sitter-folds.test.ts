@@ -5,7 +5,10 @@ import {
 	selectedReadFolder,
 } from "../../src/harness/utils/read-folders/index.ts";
 import { prepareReadFolder } from "../../src/harness/utils/read-folders/prepare.ts";
-import { loadTreeSitterFolder, TREE_SITTER_FOLDER_ID } from "../../src/harness/utils/read-folders/tree-sitter/engine.ts";
+import {
+	loadTreeSitterFolder,
+	TREE_SITTER_FOLDER_ID,
+} from "../../src/harness/utils/read-folders/tree-sitter/engine.ts";
 import type { TreeSitterLanguage } from "../../src/harness/utils/read-folders/tree-sitter/syntax.ts";
 import type { ReadFolder, ReadFolderResult, ReadFoldRange } from "../../src/harness/utils/read-folders/types.ts";
 import { typescriptOracle } from "./fixtures/read-summary/oracle-typescript.ts";
@@ -136,7 +139,13 @@ describe("tree-sitter fold boundaries (#1685)", () => {
 		});
 		// Then the default read keeps the measured heuristic folder instead of failing.
 		expect(prepared).toBe(selectedReadFolder);
-		expect(await loadTreeSitterFolder("js", { fallback: selectedReadFolder, cache: false, resolveGrammar: async () => undefined })).toBeUndefined();
+		expect(
+			await loadTreeSitterFolder("js", {
+				fallback: selectedReadFolder,
+				cache: false,
+				resolveGrammar: async () => undefined,
+			}),
+		).toBeUndefined();
 	});
 
 	it("prepares the grammar-backed folder for exactly the languages frozen to wasm", async () => {

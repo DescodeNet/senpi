@@ -38,14 +38,21 @@ describe("tree-sitter boundary safety (#1685)", () => {
 		);
 		const text = declarations.join("\n");
 		const path = `input.${fixture.language}`;
-		const parsed = engines[fixture.language === "js" ? "js" : "ts"].fold({ path, text, settings: READ_FOLD_SETTINGS });
+		const parsed = engines[fixture.language === "js" ? "js" : "ts"].fold({
+			path,
+			text,
+			settings: READ_FOLD_SETTINGS,
+		});
 		const ranges = parsed.status === "parsed" ? [...parsed.ranges] : [];
 		for (let index = 0; index < ranges.length; index++) ranges.push(...ranges[index].children);
 		const oracle = typescriptOracle(text, fixture.language);
 		// When inspecting every emitted range, then no protected header line is omitted.
 		for (const range of ranges) {
 			const fold = { start: range.startLine, end: range.endLine };
-			expect(oracle.protected.some((header) => overlaps(fold, header)), JSON.stringify(fold)).toBe(false);
+			expect(
+				oracle.protected.some((header) => overlaps(fold, header)),
+				JSON.stringify(fold),
+			).toBe(false);
 			expect(validBoundaries({ source: text, folds: [fold], ...oracle, retainedExact: true })).toBe(true);
 		}
 		// Then the rendered view keeps every complete declaration.

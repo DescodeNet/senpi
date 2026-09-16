@@ -140,7 +140,9 @@ export function selectLanguages(
 			files_with_folds: (winner ?? heuristic)?.files_with_folds ?? 0,
 			discovered_folds: (winner ?? heuristic)?.discovered_folds ?? 0,
 			file_outcomes: (winner ?? heuristic)?.file_outcomes ?? [],
-			invalid_boundaries: [...new Set([...(heuristic?.invalid_boundaries ?? []), ...(wasm?.invalid_boundaries ?? [])])],
+			invalid_boundaries: [
+				...new Set([...(heuristic?.invalid_boundaries ?? []), ...(wasm?.invalid_boundaries ?? [])]),
+			],
 			heuristic_rejection: heuristic?.reason ?? "measurement_unavailable",
 			total_saved_tokens: (winner ?? heuristic)?.total_saved_tokens ?? 0,
 		};

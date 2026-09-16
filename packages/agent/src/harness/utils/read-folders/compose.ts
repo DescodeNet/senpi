@@ -25,7 +25,9 @@ export function composeFoldResult(text: string, scan: ReadBraceScan): ReadFolder
 			return scan;
 		case "parsed": {
 			const ranges = hierarchy(scan.ranges);
-			return ranges ? { status: "parsed", text, ranges } : { status: "parse_failure", reason: "ambiguous_line_boundaries" };
+			return ranges
+				? { status: "parsed", text, ranges }
+				: { status: "parse_failure", reason: "ambiguous_line_boundaries" };
 		}
 		default:
 			return scan satisfies never;
