@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -10,7 +11,8 @@ import * as preparation from "./prepare-bun-compile-assets.mjs";
 import * as build from "./qa/read-summary-build.mjs";
 import * as rpc from "./qa/read-summary-rpc.mjs";
 
-// #1639: a heuristic selection must not gain an install-dependent parser.
+// #1639: the heuristic folder stays dependency-free. #1685: the grammar engine is a separate,
+// lazily imported module whose one runtime dependency and vendored assets ship with the package.
 describe("read-summary compile contract", () => {
 	it("correlates parallel read results by invocation identity, not completion order", () => {
 		// Given real RPC event shapes arriving in reverse order.
@@ -66,6 +68,51 @@ describe("read-summary compile contract", () => {
 		assert(inputs.includes(`${folder}brace-scanner.ts`));
 		assert(inputs.every((path) => path === view || (path.startsWith(folder) && path.endsWith(".ts"))), JSON.stringify(inputs));
 		assert(Object.values(result.metafile.outputs).every((output) => output.imports.length === 0));
+	});
+
+	it("keeps the grammar engine's dependency behind the lazy read path (#1685)", async () => {
+		// Given the module a default read imports only for a language frozen to the grammar engine.
+		const folder = "packages/agent/src/harness/utils/read-folders/";
+		const result = await bundle({ absWorkingDir: build.repository, entryPoints: [`${folder}prepare.ts`],
+			bundle: true, platform: "node", format: "esm", outdir: "unused", write: false, metafile: true,
+			external: ["web-tree-sitter"], loader: { ".wasm": "file" } });
+		const inputs = Object.keys(result.metafile.inputs).filter((path) => !path.endsWith(".wasm"));
+		// When bundling; then the engine is reachable and no source outside the folder enters the graph.
+		assert(inputs.includes(`${folder}tree-sitter/engine.ts`), JSON.stringify(inputs));
+		assert(inputs.every((path) => path.startsWith(folder) && path.endsWith(".ts")), JSON.stringify(inputs));
+		const imported = Object.values(result.metafile.outputs)
+			.flatMap((output) => output.imports.map((entry) => entry.path))
+			.filter((path) => !path.startsWith("node:") && !path.endsWith(".wasm"));
+		assert.deepEqual([...new Set(imported)], ["web-tree-sitter"]);
+	});
+
+	it("verifies every shipped grammar asset before a compile (#1685)", () => {
+		// Given the vendored provenance the compiled binary embeds.
+		assert.equal(typeof preparation.verifyTreeSitterGrammarAssets, "function");
+		const directory = join(build.repository, preparation.TREE_SITTER_ASSET_DIRECTORY);
+		const manifest = JSON.parse(readFileSync(join(directory, "provenance.json"), "utf8"));
+		// When verifying; then every declared artifact exists with its declared bytes.
+		const verified = preparation.verifyTreeSitterGrammarAssets(build.repository);
+		assert.deepEqual(
+			verified.map((artifact) => artifact.file).sort(),
+			[manifest.runtime.file, ...manifest.grammars.map((grammar) => grammar.file)].sort(),
+		);
+		for (const artifact of verified)
+			assert.equal(createHash("sha256").update(readFileSync(join(directory, artifact.file))).digest("hex"), artifact.sha256);
+		const manifestPackage = JSON.parse(readFileSync(join(build.repository, "packages/agent/package.json"), "utf8"));
+		assert(manifestPackage.files.includes("assets"), "Grammar assets must ship in the npm package");
+		// Then a drifted or missing artifact fails preparation with a machine code instead of shipping.
+		const scratch = mkdtempSync(join(tmpdir(), "read-grammar-assets-"));
+		try {
+			const staged = join(scratch, preparation.TREE_SITTER_ASSET_DIRECTORY);
+			mkdirSync(staged, { recursive: true });
+			writeFileSync(join(staged, "provenance.json"), readFileSync(join(directory, "provenance.json")));
+			assert.throws(() => preparation.verifyTreeSitterGrammarAssets(scratch), { code: "READ_SUMMARY_GRAMMAR_ASSET_MISSING" });
+			for (const artifact of verified) writeFileSync(join(staged, artifact.file), "drifted");
+			assert.throws(() => preparation.verifyTreeSitterGrammarAssets(scratch), { code: "READ_SUMMARY_GRAMMAR_ASSET_DRIFT" });
+		} finally {
+			rmSync(scratch, { recursive: true, force: true });
+		}
 	});
 
 	it("derives changed release entries and quoted argv without a copied contract", () => {

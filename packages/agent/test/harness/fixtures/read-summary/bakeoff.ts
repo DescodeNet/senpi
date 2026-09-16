@@ -2,6 +2,10 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { READ_FOLDER_SELECTION, selectedReadFolder } from "../../../../src/harness/utils/read-folders/index.ts";
+import {
+	TREE_SITTER_FOLDER_ID,
+	TREE_SITTER_FOLDER_VERSION,
+} from "../../../../src/harness/utils/read-folders/tree-sitter/engine.ts";
 import type { BakeoffOptions } from "./bakeoff-types.ts";
 import { boundaryFixtures } from "./boundary-fixtures.ts";
 import { candidateSourceHashes } from "./candidate-source-hashes.ts";
@@ -15,12 +19,14 @@ import { qualifyEnumeration, qualifySignatures } from "./qualification.ts";
 import { readRawBaseline } from "./raw-baseline.ts";
 import { runReference, tokenize } from "./reference.ts";
 import { sha256, validBoundaries } from "./scorer.ts";
+import { treeSitterAssets } from "./tree-sitter-assets.ts";
+import { wasmCandidate } from "./wasm-candidate.ts";
 
 export async function bakeoff(options: BakeoffOptions) {
 	const startedAt = new Date().toISOString();
 	const out = dirname(options.out);
 	const { corpus, entries, manifestSha256 } = loadCorpus(options.input, options.manifestHash);
-	for (const dir of ["raw", "omp", "candidate", "default-read", "synthetic"])
+	for (const dir of ["raw", "omp", "candidate", "wasm-candidate", "default-read", "synthetic"])
 		mkdirSync(join(out, dir), { recursive: true });
 	const json = (name: string, value: unknown) => writeFileSync(join(out, name), `${JSON.stringify(value, null, 2)}\n`);
 	const synthetic = boundaryFixtures().map((fixture) => {
@@ -80,6 +86,9 @@ export async function bakeoff(options: BakeoffOptions) {
 		const candidateStart = performance.now();
 		const candidate = await productionCandidate(options.input, entry.file, entry.source);
 		const candidateMs = performance.now() - candidateStart;
+		const wasmStart = performance.now();
+		const wasm = await wasmCandidate(entry.file, entry.source, entry.language);
+		const wasmMs = performance.now() - wasmStart;
 		const exact = retainedSourceExact(entry.source, candidate);
 		const boundaryInput = {
 			source: entry.source,
@@ -90,9 +99,16 @@ export async function bakeoff(options: BakeoffOptions) {
 		const valid =
 			validBoundaries({ ...boundaryInput, folds: candidate.folds }) &&
 			candidate.discoveredFolds.every((fold) => validBoundaries({ ...boundaryInput, folds: [fold] }));
+		const wasmExact = wasm ? retainedSourceExact(entry.source, wasm) : false;
+		const wasmBoundaryInput = { ...boundaryInput, retainedExact: wasmExact };
+		const wasmValid = wasm
+			? validBoundaries({ ...wasmBoundaryInput, folds: wasm.folds }) &&
+				wasm.discoveredFolds.every((fold) => validBoundaries({ ...wasmBoundaryInput, folds: [fold] }))
+			: false;
 		writeFileSync(join(out, "raw", `${entry.id}.txt`), raw);
 		writeFileSync(join(out, "omp", `${entry.id}.txt`), ref.text);
 		writeFileSync(join(out, "candidate", `${entry.id}.txt`), candidate.text);
+		if (wasm) writeFileSync(join(out, "wasm-candidate", `${entry.id}.txt`), wasm.text);
 		writeFileSync(join(out, "default-read", `${entry.id}.txt`), candidate.defaultReadText);
 		json(`omp/${entry.id}.json`, ref.result);
 		const oracleHidden = new Set(
@@ -111,6 +127,10 @@ export async function bakeoff(options: BakeoffOptions) {
 			ompMs: ref.latencyMs,
 			valid,
 			exact,
+			wasm,
+			wasmValid,
+			wasmExact,
+			wasmMs,
 			allowed: annotation.ranges,
 			protected: annotation.protected,
 			referenceComparison: compareOmp(entry.source, ref.text, annotation.ranges),
@@ -124,20 +144,34 @@ export async function bakeoff(options: BakeoffOptions) {
 			raw_sha256: sha256(row.raw),
 			omp_sha256: sha256(row.omp),
 			candidate_sha256: sha256(row.candidate.text),
+			wasm_candidate_sha256: row.wasm ? sha256(row.wasm.text) : null,
 			default_read_sha256: sha256(row.candidate.defaultReadText),
 		})),
 	);
 	const tokens = tokenize(
 		options.omp,
-		rows.flatMap((row) => [row.raw, row.omp, row.candidate.text, row.candidate.defaultReadText]),
+		rows.flatMap((row) => [
+			row.raw,
+			row.omp,
+			row.candidate.text,
+			row.candidate.defaultReadText,
+			row.wasm?.text ?? row.raw,
+		]),
 		reference.tokenizer,
 	);
 	const samples = rows.map((row, index) => ({
 		...row,
-		rawTokens: tokens[index * 4],
-		ompTokens: tokens[index * 4 + 1],
-		candidateTokens: tokens[index * 4 + 2],
-		defaultReadTokens: tokens[index * 4 + 3],
+		rawTokens: tokens[index * 5],
+		ompTokens: tokens[index * 5 + 1],
+		candidateTokens: tokens[index * 5 + 2],
+		defaultReadTokens: tokens[index * 5 + 3],
+		wasmTokens: tokens[index * 5 + 4],
+		engines: {
+			heuristic: { candidate: row.candidate, tokens: tokens[index * 5 + 2], valid: row.valid, exact: row.exact },
+			wasm: row.wasm
+				? { candidate: row.wasm, tokens: tokens[index * 5 + 4], valid: row.wasmValid, exact: row.wasmExact }
+				: undefined,
+		},
 	}));
 	json("boundaries.json", {
 		annotations_sha256: annotationsHash,
@@ -153,6 +187,10 @@ export async function bakeoff(options: BakeoffOptions) {
 			protected: row.protected,
 			discovered: row.candidate.discoveredFolds,
 			candidate: row.candidate.folds,
+			wasm_discovered: row.wasm?.discoveredFolds ?? null,
+			wasm_candidate: row.wasm?.folds ?? null,
+			wasm_fallback_reason: row.wasm?.fallback_reason ?? null,
+			wasm_valid: row.wasm ? row.wasmValid : null,
 			fallback_reason: row.candidate.fallback_reason,
 			scanned_folds: row.candidate.scanned_folds,
 			minimum_oracle_skeleton_lines: row.minimumOracleSkeleton,
@@ -166,7 +204,7 @@ export async function bakeoff(options: BakeoffOptions) {
 	json("adversarial-boundaries.json", adversarial);
 	const selections = selectLanguages(samples, corpus.max_embedded_delta_bytes, adversarial);
 	const csv = [
-		"id,language,sha256,synthetic,source_bytes,raw_tokens,omp_tokens,candidate_tokens,saved_token_fraction,omp_saved_token_fraction,raw_ms,omp_ms,candidate_ms,valid_boundaries,candidate_reason,fallback_reason,scanned_folds,emitted_folds,minimum_oracle_skeleton_lines,default_read_tokens",
+		"id,language,sha256,synthetic,source_bytes,raw_tokens,omp_tokens,candidate_tokens,saved_token_fraction,omp_saved_token_fraction,raw_ms,omp_ms,candidate_ms,valid_boundaries,candidate_reason,fallback_reason,scanned_folds,emitted_folds,minimum_oracle_skeleton_lines,default_read_tokens,wasm_tokens,wasm_saved_token_fraction,wasm_ms,wasm_valid_boundaries,wasm_reason,wasm_emitted_folds",
 	];
 	for (const row of samples)
 		csv.push(
@@ -191,6 +229,12 @@ export async function bakeoff(options: BakeoffOptions) {
 				row.candidate.folds.length,
 				row.minimumOracleSkeleton,
 				row.defaultReadTokens,
+				row.wasm ? row.wasmTokens : "",
+				row.wasm ? (row.rawTokens - row.wasmTokens) / row.rawTokens : "",
+				row.wasm ? row.wasmMs : "",
+				row.wasm ? row.wasmValid : "",
+				row.wasm?.reason ?? "",
+				row.wasm ? row.wasm.folds.length : "",
 			].join(","),
 		);
 	writeFileSync(join(out, "per-file.csv"), `${csv.join("\n")}\n`);
@@ -215,7 +259,8 @@ export async function bakeoff(options: BakeoffOptions) {
 		gate_receipt: gateReceipt,
 		reference_mode: frozen ? "frozen_actual_ReadTool_outputs" : "live_actual_ReadTool",
 		reference_latency_scope: frozen ? "original baseline observation, not rerun latency" : "current run",
-		wasm_enabled: false,
+		wasm_enabled: READ_FOLDER_SELECTION.wasm,
+		wasm_engine: { id: TREE_SITTER_FOLDER_ID, version: TREE_SITTER_FOLDER_VERSION, assets: treeSitterAssets() },
 		status: "frozen_measurement_with_per_language_raw_fallbacks",
 		head_sha: head,
 		startedAt,
@@ -243,7 +288,7 @@ export async function bakeoff(options: BakeoffOptions) {
 				candidateTokens: row.candidateTokens,
 			})),
 		caveat:
-			"Evaluation defaults only, not approved WASM packaging. Go raw is the lead-authorized per-language shortfall outcome. Native/reference runtime is excluded from senpi distribution.",
+			"Per-language selections come from these numbers under the owner's #1685 WASM approval. Go raw is the lead-authorized per-language shortfall outcome. Python/Rust/Go have no protected-interval source oracle, so no grammar candidate is measured for them. Native/reference runtime is excluded from senpi distribution.",
 	};
 	writeFileSync(options.out, `${JSON.stringify(selection, null, 2)}\n`);
 	return selection;

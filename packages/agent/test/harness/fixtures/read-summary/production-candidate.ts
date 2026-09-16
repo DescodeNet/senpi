@@ -5,6 +5,7 @@ import {
 	READ_FOLD_SETTINGS,
 	selectedReadFolder,
 } from "../../../../src/harness/utils/read-folders/index.ts";
+import { prepareReadFolder } from "../../../../src/harness/utils/read-folders/prepare.ts";
 import { createSegmentedReadView } from "../../../../src/harness/utils/segmented-read-view.ts";
 import type { Prototype } from "./heuristic.ts";
 import type { Fold } from "./scorer.ts";
@@ -15,7 +16,9 @@ export async function productionCandidate(
 	path: string,
 	source: string,
 ): Promise<Prototype & { readonly defaultReadText: string; readonly discoveredFolds: readonly Fold[] }> {
-	const parsed = selectedReadFolder.fold({ path, text: source, settings: READ_FOLD_SETTINGS });
+	// The measured folder is the one the reader will use for this path under the frozen selection.
+	const folder = (await prepareReadFolder(path, selectedReadFolder)) ?? selectedReadFolder;
+	const parsed = folder.fold({ path, text: source, settings: READ_FOLD_SETTINGS });
 	const view = createSegmentedReadView({ text: source, parsed });
 	const result = await createReadTool(cwd).execute("production-candidate", { path });
 	const text = result.content
