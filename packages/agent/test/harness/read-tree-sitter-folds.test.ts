@@ -159,4 +159,15 @@ describe("tree-sitter fold boundaries (#1685)", () => {
 		}
 		expect(await prepareReadFolder("input.js", undefined, { cache: false })).toBeUndefined();
 	});
+
+	it("never replaces a caller-supplied folder with the grammar engine", async () => {
+		// Given a reader that injected its own structural folder for a language frozen to wasm.
+		const injected: ReadFolder = Object.freeze({
+			id: "injected",
+			version: "1",
+			fold: ({ text }) => ({ status: "parsed" as const, text, ranges: [] }),
+		});
+		// Then the selection decides eligibility, and the caller keeps exactly the folder it passed.
+		expect(await prepareReadFolder("input.js", injected, { cache: false })).toBe(injected);
+	});
 });
