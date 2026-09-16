@@ -1,6 +1,7 @@
 import {
 	type AgentTool,
 	createDefaultReadSummary,
+	prepareReadFolder,
 	type ReadFolder,
 	selectedReadFolder,
 } from "@earendil-works/pi-agent-core";
@@ -176,12 +177,15 @@ export function createReadToolDefinition(
 								}
 								// Apply truncation, respecting both line and byte limits.
 								const truncation = truncateHead(selectedContent);
+								// A selected grammar loads lazily here, on the first structural read for its language.
+								const folder = await prepareReadFolder(absolutePath, options.folder);
+								if (aborted) return;
 								const summary = createDefaultReadSummary({
 									path: absolutePath,
 									text: textContent,
 									offset,
 									limit,
-									folder: options.folder,
+									folder,
 									truncated: truncation.truncated,
 								});
 								let outputText: string;

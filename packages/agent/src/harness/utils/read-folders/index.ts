@@ -1,5 +1,6 @@
 import { scanBraces } from "./brace-scanner.ts";
-import type { ReadFolder, ReadFolderInput, ReadFolderResult, ReadFoldRange, ReadLineRange } from "./types.ts";
+import { composeFoldResult } from "./compose.ts";
+import type { ReadFolder, ReadFolderInput, ReadFolderResult } from "./types.ts";
 
 export * from "./types.ts";
 
@@ -22,8 +23,9 @@ export const READ_FOLDER_SELECTION = Object.freeze({
 	} as const),
 } as const);
 
-type Language = keyof typeof READ_FOLDER_SELECTION.languages;
-function languageForPath(path: string): Language | undefined {
+export type ReadSummaryLanguage = keyof typeof READ_FOLDER_SELECTION.languages;
+export type ReadSummaryEngine = (typeof READ_FOLDER_SELECTION.languages)[ReadSummaryLanguage];
+export function languageForPath(path: string): ReadSummaryLanguage | undefined {
 	const name = path.split(/[\\/]/).pop()?.toLowerCase() ?? "";
 	if (!name.includes(".")) return undefined;
 	switch (name.slice(name.lastIndexOf(".") + 1)) {
@@ -54,27 +56,16 @@ function languageForPath(path: string): Language | undefined {
 	}
 }
 
-/** Reader eligibility stays bound to the frozen selection even with a custom folder. */
-export function isReadSummaryPath(path: string): boolean {
+/** The frozen engine for a path's language, independent of which folder object a caller supplies. */
+export function readSummaryEngineForPath(path: string): ReadSummaryEngine | undefined {
 	const language = languageForPath(path);
-	return language !== undefined && READ_FOLDER_SELECTION.languages[language] === "heuristic";
+	return language === undefined ? undefined : READ_FOLDER_SELECTION.languages[language];
 }
 
-function hierarchy(ranges: readonly ReadLineRange[]): readonly ReadFoldRange[] | undefined {
-	// Builder-owned arrays; no caller-owned ranges are sorted or mutated.
-	type Node = ReadLineRange & { readonly children: Node[] };
-	const roots: Node[] = [];
-	const stack: Node[] = [];
-	for (const range of [...ranges].sort((a, b) => a.startLine - b.startLine || b.endLine - a.endLine)) {
-		while (stack.length && range.startLine > stack[stack.length - 1].endLine) stack.pop();
-		const parent = stack[stack.length - 1];
-		if (parent && range.startLine === parent.startLine && range.endLine === parent.endLine) continue;
-		if (parent && (range.startLine <= parent.startLine || range.endLine >= parent.endLine)) return undefined;
-		const node: Node = { ...range, children: [] };
-		(parent ? parent.children : roots).push(node);
-		stack.push(node);
-	}
-	return roots;
+/** Reader eligibility stays bound to the frozen selection even with a custom folder. */
+export function isReadSummaryPath(path: string): boolean {
+	const engine = readSummaryEngineForPath(path);
+	return engine === "heuristic" || engine === "wasm";
 }
 
 function fold({ path, text, settings }: ReadFolderInput): ReadFolderResult {
@@ -88,6 +79,7 @@ function fold({ path, text, settings }: ReadFolderInput): ReadFolderResult {
 			return { status: "unsupported", reason: "prose_exempt" };
 		case "raw": // Retain the pure candidate for safety/quality measurement, never default-read eligibility.
 		case "heuristic":
+		case "wasm": // The heuristic scan is the tree-sitter engine's fallback, so it stays callable here.
 			break;
 		default:
 			return engine satisfies never;
@@ -103,19 +95,7 @@ function fold({ path, text, settings }: ReadFolderInput): ReadFolderResult {
 			throw error;
 		}
 	}
-	const scan = scanBraces(text, language, settings);
-	switch (scan.status) {
-		case "parse_failure":
-			return scan;
-		case "parsed": {
-			const ranges = hierarchy(scan.ranges);
-			return ranges
-				? { status: "parsed", text, ranges }
-				: { status: "parse_failure", reason: "ambiguous_line_boundaries" };
-		}
-		default:
-			return scan satisfies never;
-	}
+	return composeFoldResult(text, scanBraces(text, language, settings));
 }
 
 export const selectedReadFolder: ReadFolder = Object.freeze({ id: "measured-brace", version: "3", fold });
