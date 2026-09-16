@@ -1,13 +1,13 @@
 # changes
 
-## 2026-09-16 - Throughput retry branch and its settings withdrawn (senpi#1759)
+## 2026-09-16 - Slow-stream retry branch and its settings withdrawn (senpi#1759)
 
 ### What changed
 
-- `packages/coding-agent/src/core/agent-session.ts`: the `isProviderStreamThroughputDegradedError` branch in `_handleRetryableError`, the `stream_throughput_degraded` session event and the `"throughput"` arm of the provider-error log kind are removed. Stalls, refusals and the 429 tiers are unchanged.
-- `packages/coding-agent/src/core/settings-manager.ts`: `getAgentStreamThroughputOptions()` removed.
-- `packages/coding-agent/src/core/retry-fallback/settings.ts`: `minThroughputTokensPerSecond`, `throughputWindowMs` and `throughputGraceMs` removed from `ProviderRetrySettings`.
-- `packages/coding-agent/src/core/sdk.ts`: the `streamThroughput` wiring next to `timeoutMs` / `streamStartTimeoutMs` removed.
+- `packages/coding-agent/src/core/agent-session.ts`: the retry branch for the agent loop's rate verdict, the session event it emitted when no fallback candidate remained, and its arm of the provider-error log kind are removed. Stalls, refusals and the 429 tiers are unchanged.
+- `packages/coding-agent/src/core/settings-manager.ts`: the getter that forwarded those thresholds to the agent is removed.
+- `packages/coding-agent/src/core/retry-fallback/settings.ts`: the three `retry.provider` rate fields are removed from `ProviderRetrySettings`.
+- `packages/coding-agent/src/core/sdk.ts`: the wiring that passed them to the `Agent` next to `timeoutMs` / `streamStartTimeoutMs` is removed.
 
 ### Why
 
@@ -19,7 +19,7 @@
 
 ### Expected merge conflict zones
 
-- MEDIUM: the retry class chain in `_handleRetryableError` is back to stall / refusal / 429 tiers only, so an upstream edit there applies without the fork-local throughput arm.
+- MEDIUM: the retry class chain in `_handleRetryableError` is back to stall / refusal / 429 tiers only, so an upstream edit there applies without the fork-local arm.
 - LOW: the settings getter and the `ProviderRetrySettings` fields.
 
 ## 2026-09-16 - Stalled turns end with recovery guidance (senpi#1740)
