@@ -8,6 +8,8 @@
 
 ### Changed
 
+- `--help` no longer boots the engine to print a help screen. The usage text and the flags extensions register are answered from a cache of the last launch's flag set (`<agentDir>/cache/help-flags.json`, validated against the engine version and the mtime/size of every extension, settings and trust input, so an upgrade or an edited extension refreshes it); a cache miss loads extensions for their flags only and skips the model runtime, the session and every other resource class. Measured warm on an Apple M4 Pro: 790ms → 28ms on bun and 959ms → 59ms on node for `--help`; a help screen never prompts for project trust and never runs project-local extension code that is not already trusted. ([oh-my-openagent#8371](https://github.com/code-yeongyu/oh-my-openagent/issues/8371))
+
 ### Fixed
 
 ### Removed

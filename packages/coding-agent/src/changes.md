@@ -1,5 +1,25 @@
 # changes
 
+## 2026-09-16 - Answer `--help` without booting the engine (oh-my-openagent#8371)
+
+### What changed
+
+- `packages/coding-agent/src/cli.ts`: a plain root `--help`/`-h` is answered before `cli-main` is imported when `cli/help-fast-path.ts` finds a valid flags cache for this cwd, agent dir, `--extension` set and project-trust decision; the import stays dynamic for the same reason the `cli-main` import is. `--no-extensions` is answered without any cache.
+- `packages/coding-agent/src/main.ts`: a plain `--help` stops right after CLI paths are resolved. It resolves extension flags through `cli/help-extension-flags.ts` (a `DefaultResourceLoader` with skills, prompt templates, themes and context files disabled; no `ModelRuntime`, no `SessionManager`, no `AgentSession`), prints help, writes `<agentDir>/cache/help-flags.json` through `cli/help-flags-cache.ts` and exits. Every full launch also refreshes that cache from the runtime's loaded extensions right after the late `parsed.help` branch, which now only serves `--help --mode json` / `-p --help`.
+- Project trust for the help path is `--yolo`/override → recorded `trust.json` decision → trusted when the project carries no trust-requiring resources; it never prompts and never loads untrusted project extension code.
+
+### Why
+
+- oh-my-openagent#8371: `omo --help` measured 47.8s on Windows and 790ms warm / 8.8-13.6s cold on bun here, all spent building a runtime the help screen never uses. Cached help now costs 28ms (bun) / 59ms (node); a cache miss costs the extension load only.
+
+### Why an extension could not handle it
+
+- The help screen is printed by the host before any extension is bound, and the cost being removed is the host's own runtime construction.
+
+### Expected merge conflict zones
+
+- MEDIUM: `main.ts` around the `resolveCliPaths` block and the late `if (parsed.help)` branch; LOW: `cli.ts` next to the `--version` fast path.
+
 ## 2026-09-16 - Print mode explains provider stalls (senpi#1740)
 
 ### What changed
