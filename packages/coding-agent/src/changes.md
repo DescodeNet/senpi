@@ -18,6 +18,27 @@
 
 - `packages/coding-agent/src/index.ts` adjacent to the `kernelToolsStorage` export.
 
+## 2026-09-16 - Order worker output to one client scope (senpi#1676)
+
+### What changed
+
+- `packages/coding-agent/src/experimental/session-worker-manager.ts`: service events and operation responses for one attachment scope now share a single FIFO (`#forwardInScopeOrder`) instead of an async per-subscription delivery chain plus an immediately settled response. A response is handed to the presentation client only after every provider update the worker emitted before it has been forwarded, so the client observes the worker's emission order; buffering stays bounded by the transport's existing pending-byte limit, whose overflow disconnects that peer explicitly.
+- `packages/coding-agent/src/experimental/client.ts`: `runClient` keeps its transcript subscription until the prompted run's own terminal event (`run_end`/`run_suspend`) has been delivered, bounded by `RUN_TAIL_TIMEOUT_MS`, instead of unsubscribing the moment the prompt response resolves.
+
+### Why
+
+- senpi#1676: a worker emits a run's transcript updates and that run's response on one control channel in order, but the server forwarded them on two independent paths. Under a client that was slow to drain its socket, the prompt response overtook the queued updates, and the client tore its subscription down on the response - the received event list ended at `entry_added` with `run_end` missing (reproduced with a stalled peer write), and the same race could return an empty answer because the assistant `message_end` had not been delivered either.
+
+### Why an extension could not handle it
+
+- The ordering hazard is inside the host's worker-to-client forwarding and the client command's own subscription lifetime; no extension surface observes either.
+
+### Expected merge conflict zones
+
+- MEDIUM: `#handleOperationResponse` and `#handleServiceEvent` in `session-worker-manager.ts`, plus the removed `deliveryTail` field on `WorkerServiceSubscription`. LOW: the prompt block of `runClient` in `client.ts`.
+
+||||||| a07f94adb3
+
 ## 2026-09-16 - Answer `--help` without booting the engine (oh-my-openagent#8371)
 
 ### What changed
