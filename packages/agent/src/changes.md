@@ -1,3 +1,29 @@
+## 2026-09-16 - Grammar-backed fold boundaries for structural reads (senpi#1685)
+
+### What changed
+
+- `packages/agent/src/harness/utils/read-folders/tree-sitter/syntax.ts`: a pure fold rule over a parsed syntax tree. It mirrors the compiler oracle's whitelist - block, module, switch, object and array interiors plus non-documentation comments - and protects parameter lists, heritage clauses, decorators, import declarations, binding patterns, computed member names, destructuring assignment targets, type annotations, `as`/`satisfies` operands and every declaration line through the line that opens its body. Any candidate overlapping a protected interval is dropped.
+- `packages/agent/src/harness/utils/read-folders/tree-sitter/engine.ts`: loads one grammar per language on first use, parses inside a 250 ms budget, and returns the injected fallback folder's own result when the grammar is absent, the tree has an error or the budget is exhausted.
+- `packages/agent/src/harness/utils/read-folders/tree-sitter/grammar-assets.ts`: resolves the vendored grammar and runtime artifacts from the package, the compiled binary's embedded assets, or the pinned measurement dependency, in that order.
+- `packages/agent/src/harness/utils/read-folders/compose.ts`: the hierarchy and scan-to-result composition both engines share, lifted out of `packages/agent/src/harness/utils/read-folders/index.ts`.
+- `packages/agent/src/harness/utils/read-folders/prepare.ts`: resolves the folder a default read must use for a path; only a language the frozen selection binds to `wasm` loads a grammar.
+- `packages/agent/src/harness/utils/read-folders/index.ts`: the frozen selection now names `wasm` for `.js` with the measured raw reasons for TypeScript and TSX, and `isReadSummaryPath` accepts a `wasm` selection.
+- `packages/agent/src/harness/tools/read.ts`: awaits the prepared folder before composing the default summary.
+- `packages/agent/src/index.ts` and `packages/agent/src/runtime-assets.d.ts`: export the prepare seam and declare the packaged WebAssembly asset imports.
+
+### Why
+
+- After #1644 the dependency-free scan qualified only for JSON; TypeScript and JavaScript were frozen raw pending the owner's WASM decision. #1685 answered it, and the re-run bake-off measures both engines per language under the same oracle, threshold rule and frozen-selection mechanism: JavaScript reaches a 41.93% median token saving against its 35.54% bar (heuristic: 0%), while TypeScript and TSX stay raw because the minimum oracle skeleton of most of their files exceeds the view's 100 visible-line budget.
+
+### Why an extension could not handle it
+
+- The read tool's default output and its frozen per-language selection are decided inside the agent package before any extension hook observes the read; an extension cannot change which folder the tool composes, nor bind an engine to the measurement receipt.
+
+### Expected merge conflict zones
+
+- LOW: the `READ_FOLDER_SELECTION` literal and the `fold` switch in `packages/agent/src/harness/utils/read-folders/index.ts`, which the fork already owns.
+- LOW: the summary call site in `packages/agent/src/harness/tools/read.ts`, now preceded by an awaited folder resolution.
+
 ## 2026-09-16 - Fork-local rate guard withdrawn; the loop bounds silence only (senpi#1759)
 
 ### What changed

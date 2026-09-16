@@ -1,5 +1,25 @@
 # changes
 
+## 2026-09-16 - Verify and externalize the grammar engine's assets (#1685)
+
+### What changed
+
+- `scripts/prepare-bun-compile-assets.mjs`: `verifyTreeSitterGrammarAssets` checks every artifact named by the vendored provenance file against its recorded SHA-256 and fails asset preparation with a machine code when one is missing or drifted; `main` runs it alongside the imagegen skill staging.
+- `scripts/check-browser-smoke.mjs`: the browser bundles externalize the single lazy dynamic import of the Node-only grammar engine and fail if that module still enters the treeshake graph.
+- `scripts/qa/omp-item1.ts`: the compiled-parity and packaging runners now require the gate receipt's WASM answer and its declared candidate dependencies to agree, instead of asserting the pre-decision heuristic-only selection.
+
+### Why
+
+- The compiled binary embeds the grammar through a file import, so a missing or drifted artifact must fail the build rather than ship a binary that silently falls back to the heuristic scan. The browser smoke would otherwise hard-error on the engine's `node:fs`/`node:module` reads, which no browser bundle ever executes.
+
+### Why an extension could not handle it
+
+- Asset preparation and bundle guards run in the build, before any runtime exists.
+
+### Expected merge conflict zones
+
+- LOW: `main()` in `scripts/prepare-bun-compile-assets.mjs` and the plugin list in `scripts/check-browser-smoke.mjs`.
+
 ## 2026-09-16 - Type-check the qa scripts
 
 ### What changed
