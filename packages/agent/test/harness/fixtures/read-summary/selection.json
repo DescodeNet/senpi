@@ -44,7 +44,7 @@
     "counterexamples": [],
     "sha256": "48140de2438011b420a233f2790c302d186ad633ac5811f57bd3bc7c34f6cb47"
   },
-  "tree_sha": "397d6b493c1f1377c40edb57220d3171f2125a7e",
+  "tree_sha": "33ae7a96d5da456d5021eef42773ff62062ae355",
   "binary_measurement": "omp-item1 --case compiled-parity (release graph, all shipped targets)",
   "gate_status": "OQ1_unresolved_defaults_used",
   "gate_receipt": {
@@ -105,9 +105,9 @@
     ]
   },
   "status": "frozen_measurement_with_per_language_raw_fallbacks",
-  "head_sha": "93fb9b0a7f7422b2ee7641585ef395d671c84ab5",
-  "startedAt": "2026-09-16T17:40:34.938Z",
-  "finishedAt": "2026-09-16T17:40:35.877Z",
+  "head_sha": "ec63eb5ee999da83b9e5d3e37b83d1998707f44c",
+  "startedAt": "2026-09-16T19:20:26.419Z",
+  "finishedAt": "2026-09-16T19:20:27.638Z",
   "corpus_sha256": "7341450565d0c56ac07ef676eb6e43a79cab7a012fefe73612a7e2cab1ba43fa",
   "annotations_sha256": "c3dc623bd0418fd7b8052e9c8418f84f5d3bff4e08022c309600de286e8f5133",
   "adversarial_boundaries_sha256": "ee70ae8a6d8e280c5d7d02623a7945455b3b761978caee9bf02b8020865ca4d6",
