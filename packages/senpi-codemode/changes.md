@@ -1,5 +1,24 @@
 # senpi-codemode fork changes
 
+## 2026-09-16 - Kernel-tool capability on the worker tool-call path (#1754)
+
+### What changed
+
+- `src/tool/run-eval-cell.ts` computes the cell's `kernelTools` capability before the handler exists and passes it into `CellHandler` through `CellBridgeRuntime`.
+- `src/tool/cell-handler.ts` enters `kernelToolsStorage.run(kernelTools, ...)` around each `tool-call` dispatch (reserved `agent()`/`output()` bridges, completion, and ordinary host tools), so `ExtensionContext.kernelTools` resolves for exactly the duration of every host tool call a live JS cell makes.
+
+### Why
+
+- The kernel's message callback fires from the worker's own message loop, outside the `kernelToolsStorage.run` scope that only wrapped the awaited run chain, so every host tool dispatched by a running cell saw an empty store and refused kernel-tool grants with `tools_unavailable` (#1754); the capability from #1647 was unreachable in the shipped product.
+
+### Why an extension could not handle it
+
+- The dispatch boundary between the JS worker's message loop and the host tool runtime is owned by the codemode cell handler.
+
+### Expected merge conflict zones
+
+- LOW: `src/tool/cell-handler.ts`, `src/tool/run-eval-cell.ts`.
+
 ## 2026-09-16 - Live host and foreign kernel-tool name collisions (#1647)
 
 ### What changed
