@@ -164,6 +164,24 @@ describe("help fast path (oh-my-openagent#8371)", () => {
 		});
 	});
 
+	describe("#given the project directory carries an extension the user never trusted", () => {
+		test("#when --help runs #then the project extension is neither loaded nor listed", () => {
+			const projectExtensionsDir = join(projectDir, ".senpi", "extensions");
+			mkdirSync(projectExtensionsDir, { recursive: true });
+			writeFileSync(join(projectExtensionsDir, "project-probe.js"), probeExtensionSource("project-probe-delta"));
+
+			const first = runHelp();
+			const second = runHelp();
+
+			expect(first.status, first.stderr).toBe(0);
+			expect(first.stdout).toContain("--help-probe-alpha");
+			expect(first.stdout).not.toContain("--project-probe-delta");
+			expect(first.loads).toBe(1);
+			expect(second.stdout).toBe(first.stdout);
+			expect(second.loads).toBe(1);
+		});
+	});
+
 	describe("#given extensions are disabled for this run", () => {
 		test("#when --help --no-extensions runs #then usage prints with no extension flags and no extension load", () => {
 			const run = runHelp(["--help", "--no-extensions"]);

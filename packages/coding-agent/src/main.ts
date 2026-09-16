@@ -31,6 +31,9 @@ import {
 } from "./cli/auth-command.ts";
 import { resolveCredentialForPrint } from "./cli/credential-print.ts";
 import { processFileArguments } from "./cli/file-processor.ts";
+import { resolveHelpExtensionFlags } from "./cli/help-extension-flags.ts";
+import { helpFlagsScope, isPlainHelpRequest, resolveHelpProjectTrust } from "./cli/help-fast-path.ts";
+import { writeHelpFlagsCache } from "./cli/help-flags-cache.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
 import { listModels } from "./cli/list-models.ts";
 import { listTips } from "./cli/list-tips.ts";
@@ -1014,6 +1017,26 @@ export async function main(args: string[], options?: MainOptions) {
 	const resolvedPromptTemplatePaths = resolveCliPaths(cwd, parsed.promptTemplates);
 	const resolvedThemePaths = resolveCliPaths(cwd, parsed.themes);
 
+	// Help is answered from the flags alone, so it stops here instead of continuing into the model
+	// runtime, the session manager and the rest of the resource load. The flags are cached for the
+	// next run, which `cli.ts` then answers before this module is even imported.
+	if (isPlainHelpRequest(parsed)) {
+		const projectTrusted = resolveHelpProjectTrust(parsed, cwd, agentDir);
+		const scope = helpFlagsScope(parsed, cwd, agentDir, projectTrusted);
+		const { flags, extensionPaths } = await resolveHelpExtensionFlags({
+			cwd,
+			agentDir,
+			settingsManager: SettingsManager.create(cwd, agentDir, { projectTrusted }),
+			additionalExtensionPaths: resolvedExtensionPaths ?? [],
+			noExtensions: parsed.noExtensions === true,
+			...(extensionFactories ? { extensionFactories } : {}),
+		});
+		printHelp(flags);
+		writeHelpFlagsCache({ scope, flags, extensionPaths });
+		printTimings();
+		process.exit(0);
+	}
+
 	if (parsed.listTips) {
 		listTips();
 		process.exit(0);
@@ -1181,13 +1204,19 @@ export async function main(args: string[], options?: MainOptions) {
 	applyHttpProxySettings(settingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher(settingsManager.getHttpIdleTimeoutMs());
 
+	const loadedExtensions = resourceLoader.getExtensions().extensions;
+	const extensionFlags = loadedExtensions.flatMap((extension) => Array.from(extension.flags.values()));
 	if (parsed.help) {
-		const extensionFlags = resourceLoader
-			.getExtensions()
-			.extensions.flatMap((extension) => Array.from(extension.flags.values()));
 		printHelp(extensionFlags);
 		process.exit(0);
 	}
+	// Every full launch refreshes what `--help` reads, so the fast path stays warm without a help
+	// run of its own.
+	writeHelpFlagsCache({
+		scope: helpFlagsScope(parsed, cwd, agentDir, settingsManager.isProjectTrusted()),
+		flags: extensionFlags,
+		extensionPaths: loadedExtensions.map((extension) => extension.resolvedPath),
+	});
 
 	// Read piped stdin content (if any) - skip for RPC mode which uses stdin for JSON-RPC
 	let stdinContent: string | undefined;
