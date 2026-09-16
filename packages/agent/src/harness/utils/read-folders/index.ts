@@ -24,7 +24,8 @@ export const READ_FOLDER_SELECTION = Object.freeze({
 } as const);
 
 export type ReadSummaryLanguage = keyof typeof READ_FOLDER_SELECTION.languages;
-export type ReadSummaryEngine = (typeof READ_FOLDER_SELECTION.languages)[ReadSummaryLanguage];
+/** Every engine a frozen selection may name, independent of which ones the current receipt uses. */
+export type ReadSummaryEngine = "raw" | "heuristic" | "wasm" | "unsupported" | "prose_exempt";
 export function languageForPath(path: string): ReadSummaryLanguage | undefined {
 	const name = path.split(/[\\/]/).pop()?.toLowerCase() ?? "";
 	if (!name.includes(".")) return undefined;
@@ -59,7 +60,9 @@ export function languageForPath(path: string): ReadSummaryLanguage | undefined {
 /** The frozen engine for a path's language, independent of which folder object a caller supplies. */
 export function readSummaryEngineForPath(path: string): ReadSummaryEngine | undefined {
 	const language = languageForPath(path);
-	return language === undefined ? undefined : READ_FOLDER_SELECTION.languages[language];
+	if (language === undefined) return undefined;
+	const engine: ReadSummaryEngine = READ_FOLDER_SELECTION.languages[language];
+	return engine;
 }
 
 /** Reader eligibility stays bound to the frozen selection even with a custom folder. */
@@ -71,7 +74,7 @@ export function isReadSummaryPath(path: string): boolean {
 function fold({ path, text, settings }: ReadFolderInput): ReadFolderResult {
 	const language = languageForPath(path);
 	if (!language) return { status: "unsupported", reason: "unsupported_language" };
-	const engine = READ_FOLDER_SELECTION.languages[language];
+	const engine: ReadSummaryEngine = READ_FOLDER_SELECTION.languages[language];
 	switch (engine) {
 		case "unsupported":
 			return { status: "unsupported", reason: "unsupported_language" };
