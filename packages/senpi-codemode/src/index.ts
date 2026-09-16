@@ -263,10 +263,17 @@ function modelIdFrom(event: unknown): string | undefined {
 }
 
 export {
+	KERNEL_TOOLS_CAPABILITIES,
 	KERNEL_TOOLS_UNSUPPORTED,
 	type KernelToolDescriptor,
+	type KernelToolHostDenial,
+	type KernelToolHostDenialReason,
+	type KernelToolsCapabilities,
 	type KernelToolsCapability,
 	type KernelToolsDescribeResult,
+	type KernelToolsHostScope,
+	type KernelToolsInvokeOptions,
 	type KernelToolsInvokeRequest,
+	type KernelToolsInvokeScope,
 } from "./kernels/js/kernel-tools-types.ts";
 export { enabledLanguagesFrom };
