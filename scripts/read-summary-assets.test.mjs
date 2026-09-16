@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -113,10 +114,19 @@ describe("read-summary compile contract", () => {
 		try {
 			const staged = join(scratch, preparation.TREE_SITTER_ASSET_DIRECTORY);
 			mkdirSync(staged, { recursive: true });
+			assert.throws(() => preparation.verifyTreeSitterGrammarAssets(scratch), { code: "READ_SUMMARY_GRAMMAR_ASSET_MISSING" });
 			writeFileSync(join(staged, "provenance.json"), readFileSync(join(directory, "provenance.json")));
 			assert.throws(() => preparation.verifyTreeSitterGrammarAssets(scratch), { code: "READ_SUMMARY_GRAMMAR_ASSET_MISSING" });
 			for (const artifact of verified) writeFileSync(join(staged, artifact.file), "drifted");
 			assert.throws(() => preparation.verifyTreeSitterGrammarAssets(scratch), { code: "READ_SUMMARY_GRAMMAR_ASSET_DRIFT" });
+			// A repository that ships the agent package must ship its assets: preparation cannot pass.
+			mkdirSync(join(scratch, "packages/agent"), { recursive: true });
+			writeFileSync(join(scratch, "packages/agent/package.json"), "{}");
+			const result = spawnSync(process.execPath, [join(build.repository, "scripts/prepare-bun-compile-assets.mjs")], {
+				cwd: scratch, encoding: "utf8", timeout: 20000, env: { ...process.env, PI_BUN_COMPILE_REPO_ROOT: scratch },
+			});
+			assert.notEqual(result.status, 0, result.stdout);
+			assert.match(result.stderr, /READ_SUMMARY_GRAMMAR_ASSET_DRIFT/);
 		} finally {
 			rmSync(scratch, { recursive: true, force: true });
 		}

@@ -83,6 +83,11 @@ function main() {
 	const repoRoot = resolve(process.env.PI_BUN_COMPILE_REPO_ROOT ?? join(scriptDirectory, ".."));
 	const prepared = stageImageGenSkill(repoRoot);
 	console.log(`[prepare-bun-compile-assets] imagegen skill ${prepared ? "prepared" : "not installed; skipping"}`);
+	// The package that ships the grammars is the authority: where it exists, its assets must too.
+	if (!existsSync(join(repoRoot, "packages/agent/package.json"))) {
+		console.log("[prepare-bun-compile-assets] agent package not installed; skipping tree-sitter assets");
+		return;
+	}
 	const grammars = verifyTreeSitterGrammarAssets(repoRoot);
 	console.log(`[prepare-bun-compile-assets] tree-sitter assets verified: ${grammars.map((g) => g.file).join(", ")}`);
 }
