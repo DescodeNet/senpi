@@ -10,6 +10,8 @@
 
 ### Fixed
 
+- The experimental server no longer lets a Session worker's operation response overtake the provider updates the worker emitted before it. A worker writes a run's transcript updates and that run's response to one control channel in order, but the server forwarded updates through a delivery chain that awaits the client socket write while it settled responses the moment they arrived, so a client that was slow to drain received the prompt response ahead of the run's trailing `run_end` and tore its transcript subscription down on top of the undelivered events (the event stream ended at `entry_added`, and the same race could return an empty answer). Both now share one FIFO per attachment, so a slow drain delays the response instead of dropping events, bounded by the connection's existing pending-byte limit and its explicit disconnect. The experimental client also keeps its transcript subscription until the prompted run's own terminal event arrives, rather than until the response resolves. ([#1676](https://github.com/code-yeongyu/senpi/issues/1676))
+
 ### Removed
 
 ## [2026.9.16-3] - 2026-09-16
