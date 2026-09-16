@@ -88,6 +88,12 @@ function exportsOnlyBindings(node: SyntaxNode): boolean {
 	return false;
 }
 
+/** `x as const` / `x satisfies T`: everything from the operator on is type material. */
+function typeOperator(node: SyntaxNode): SyntaxNode | undefined {
+	if (node.type !== "as_expression" && node.type !== "satisfies_expression") return undefined;
+	return childNodes(node).find((child) => child.type === "as" || child.type === "satisfies");
+}
+
 function assignmentTarget(node: SyntaxNode): SyntaxNode | undefined {
 	if (node.type !== "assignment_expression" && node.type !== "for_in_statement") return undefined;
 	const left = node.childForFieldName("left");
@@ -124,6 +130,15 @@ export function foldRangesFromSyntax(root: SyntaxNode, settings: ReadFoldSetting
 				protect(line(node.startPosition.row), line(node.endPosition.row));
 			else if (lines >= settings.minCommentLines)
 				candidates.push({ startLine: line(node.startPosition.row) + 1, endLine: line(node.endPosition.row) - 1 });
+			return;
+		}
+		const operator = typeOperator(node);
+		if (operator) {
+			protect(line(operator.startPosition.row), line(node.endPosition.row));
+			for (const child of childNodes(node)) {
+				if (child.id === operator.id) break;
+				visit(child);
+			}
 			return;
 		}
 		const target = assignmentTarget(node);
