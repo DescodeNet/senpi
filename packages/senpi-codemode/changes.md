@@ -1,5 +1,24 @@
 # senpi-codemode fork changes
 
+## 2026-09-16 - Bind kernel-tools types to the host declaration (senpi#1731)
+
+### What changed
+
+- `src/kernels/js/kernel-tools-types.ts` aliases `KernelToolsInvokeOptions` / `KernelToolsInvokeScope` / `KernelToolsHostScope` from `@code-yeongyu/senpi`'s `KernelToolInvokeOptions` / `KernelToolInvokeScope`, types `KernelToolsCapability` as `ExtensionKernelTools`, and `KERNEL_TOOLS_CAPABILITIES satisfies ExtensionKernelTools["capabilities"]`.
+- `src/tool/run-eval-cell.ts` types the cell capability object with `satisfies ExtensionKernelTools`.
+
+### Why
+
+- Coding-agent owns the public `ExtensionContext.kernelTools` declaration; this package implements it. Importing the host types here is the drift check (#1731).
+
+### Why an extension could not handle it
+
+- The capability object is constructed by the codemode kernel and published onto the host `kernelToolsStorage`; only this package can bind that object to the host type.
+
+### Expected merge conflict zones
+
+- LOW: `src/kernels/js/kernel-tools-types.ts`, `src/tool/run-eval-cell.ts`.
+
 ## 2026-09-16 - Call-scoped host-tool policy for kernel-tool invoke (#1731)
 
 ### What changed

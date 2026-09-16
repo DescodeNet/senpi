@@ -1,5 +1,23 @@
 # changes
 
+## 2026-09-16 - Type kernelTools as the shipped invoke-scope surface (senpi#1731)
+
+### What changed
+
+- `packages/coding-agent/src/index.ts` exports `ExtensionKernelTools`, `KernelToolInvokeOptions`, and `KernelToolInvokeScope` as the public shipped kernel-tools surface.
+
+### Why
+
+- `packages/coding-agent/src/index.ts` is the public `@code-yeongyu/senpi` surface; typed consumers of `kernelTools` were still on the pre-#1765 `AbortSignal`-only declaration.
+
+### Why an extension could not handle it
+
+- Package index re-exports are owned by coding-agent; an extension cannot change the published host type.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/index.ts` adjacent to the `kernelToolsStorage` export.
+
 ## 2026-09-16 - Answer `--help` without booting the engine (oh-my-openagent#8371)
 
 ### What changed

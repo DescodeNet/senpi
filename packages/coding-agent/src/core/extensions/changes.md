@@ -1,5 +1,24 @@
 # Core Extensions Changes
 
+## 2026-09-16 - Type kernelTools as the shipped invoke-scope surface (senpi#1731)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/types.ts` types `ExtensionContext.kernelTools` as `ExtensionKernelTools` instead of a hand-written `invoke(request, signal?: AbortSignal)` copy.
+- `packages/coding-agent/src/core/extensions/kernel-tools-context.ts` owns `ExtensionKernelTools`, `KernelToolInvokeOptions`, and `KernelToolInvokeScope`: `invoke` accepts `{ signal?, scope? }` (bare `AbortSignal` still typed) and `capabilities.invokeScope` is present.
+
+### Why
+
+- `packages/coding-agent/src/core/extensions/types.ts` is the public `ExtensionContext` contract; coding-agent is the lower layer and must declare the shipped kernel-tools surface rather than import it from senpi-codemode.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/core/extensions/types.ts` owns `ExtensionContext`; an extension cannot replace the host's published type.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/core/extensions/types.ts` after `steeringSignal`; `packages/coding-agent/src/core/extensions/kernel-tools-context.ts` `ExtensionKernelTools` declaration.
+
 ## 2026-09-16 - Host budget for session_shutdown handlers (senpi#1732)
 
 ### What changed

@@ -10,6 +10,8 @@
 
 ### Changed
 
+- Kernel-tools types bind to coding-agent's `ExtensionKernelTools` / `KernelToolInvokeOptions` / `KernelToolInvokeScope` (`KERNEL_TOOLS_CAPABILITIES satisfies ExtensionKernelTools["capabilities"]`) so the implementation cannot drift from the host declaration ([#1731](https://github.com/code-yeongyu/senpi/issues/1731)).
+
 ### Fixed
 
 ### Removed
