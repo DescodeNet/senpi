@@ -1,5 +1,27 @@
 # changes
 
+## 2026-09-16 - Throughput retry branch and its settings withdrawn (senpi#1759)
+
+### What changed
+
+- `packages/coding-agent/src/core/agent-session.ts`: the `isProviderStreamThroughputDegradedError` branch in `_handleRetryableError`, the `stream_throughput_degraded` session event and the `"throughput"` arm of the provider-error log kind are removed. Stalls, refusals and the 429 tiers are unchanged.
+- `packages/coding-agent/src/core/settings-manager.ts`: `getAgentStreamThroughputOptions()` removed.
+- `packages/coding-agent/src/core/retry-fallback/settings.ts`: `minThroughputTokensPerSecond`, `throughputWindowMs` and `throughputGraceMs` removed from `ProviderRetrySettings`.
+- `packages/coding-agent/src/core/sdk.ts`: the `streamThroughput` wiring next to `timeoutMs` / `streamStartTimeoutMs` removed.
+
+### Why
+
+- The agent-loop rate guard those knobs configured aborted healthy turns and was withdrawn (senpi#1759). With no such verdict reaching the session, the retry branch is unreachable and the settings configure nothing.
+
+### Why an extension could not handle it
+
+- Retry budget, fallback chain and turn termination live in `AgentSession`, and the settings surface is host-owned; an extension can neither add nor remove either.
+
+### Expected merge conflict zones
+
+- MEDIUM: the retry class chain in `_handleRetryableError` is back to stall / refusal / 429 tiers only, so an upstream edit there applies without the fork-local throughput arm.
+- LOW: the settings getter and the `ProviderRetrySettings` fields.
+
 ## 2026-09-16 - Stalled turns end with recovery guidance (senpi#1740)
 
 ### What changed
@@ -17,28 +39,6 @@
 ### Expected merge conflict zones
 
 - LOW: one import specifier, one new private method before `_degradeRateLimitedWithoutFallback`, and one `finalError:` line in the generic transient-exhaustion branch of `_handleRetryableError`.
-
-## 2026-09-16 - Throughput-degraded streams skip same-model retries and fail over (senpi#1739)
-
-### What changed
-
-- `packages/coding-agent/src/core/agent-session.ts`: `_handleRetryableError` gains a branch for `isProviderStreamThroughputDegradedError` ahead of the generic transient path. It spends no same-model attempts, calls `tryFallback("transient")` immediately (which still notes the slow selector's cooldown), and, when no candidate exists, emits the new `stream_throughput_degraded` session event (`model`, `errorMessage`, `chainConfigured`) plus the usual `retry_fallback_exhausted` / `auto_retry_end` bookkeeping before ending the turn on that error. The `provider_error` session log gains the `throughput` kind.
-- `packages/coding-agent/src/core/settings-manager.ts`: `getAgentStreamThroughputOptions()` forwards `retry.provider.minThroughputTokensPerSecond`, `retry.provider.throughputWindowMs` and `retry.provider.throughputGraceMs` to the agent loop, returning undefined when nothing is configured so the agent defaults apply; a configured `0` floor or window is forwarded and disables the guard.
-- `packages/coding-agent/src/core/retry-fallback/settings.ts`: the three knobs on `ProviderRetrySettings`.
-- `packages/coding-agent/src/core/sdk.ts`: wires `streamThroughput` into the `Agent` next to `timeoutMs` / `streamStartTimeoutMs`.
-
-### Why
-
-- senpi#1739: a provider that keeps streaming at ~2 tok/s produced no error at all, so retry and fallback never ran and the session looked healthy. With the agent loop now failing such a stream, the session must route it: replaying the payload on the same model cannot make the upstream faster, and the stall policy's full same-model budget would waste minutes before the chain is consulted.
-
-### Why an extension could not handle it
-
-- Retry budget, fallback chain and turn termination all live in `AgentSession`; extensions observe the turn after those decisions and cannot skip the same-model budget.
-
-### Expected merge conflict zones
-
-- MEDIUM: the retry class chain in `_handleRetryableError` (`packages/coding-agent/src/core/agent-session.ts`), which upstream also edits for 429 tiers and stalls. Keep the throughput branch BEFORE the generic transient branch.
-- LOW: the settings getter and the `ProviderRetrySettings` fields.
 
 ## 2026-09-16 - /rename session command
 

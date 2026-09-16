@@ -1,25 +1,24 @@
-## 2026-09-16 - Stream throughput watchdog for in-progress provider streams (#1739)
+## 2026-09-16 - Stream throughput guard withdrawn; the loop bounds silence only (senpi#1759)
 
 ### What changed
 
-- `packages/agent/src/stream-throughput-watchdog.ts` (new): `StreamThroughputDegradedError`, `formatStreamThroughputDegradedMessage`, `estimateStreamedUnits`, the sliding-window `StreamRateMeter`, `createStreamThroughputWatchdog` and the shipped defaults (floor 8 units/s, 20s window, 5s grace, 16-unit minimum). One streamed unit is ~4 characters of a text or thinking delta, so a gateway that batches several tokens per delta is measured by volume rather than by event count.
-- `packages/agent/src/agent-loop.ts`: the assistant event reader creates the watchdog from `config.streamThroughput`, anchors it at the first stream event, records units from `text_delta` / `thinking_delta`, and excludes any wait that began while the stream reported pending local work (Cursor exec). A verdict closes the iterator, aborts the request controller with the error and rejects the read, so the turn ends as `stopReason: "error"` with that message and the request signal carries it.
-- `packages/agent/src/types.ts`: `AgentLoopConfig.streamThroughput` (floor / window / grace; a `0` floor or window disables the guard).
-- `packages/agent/src/agent.ts`: `AgentOptions.streamThroughput` and the matching public field, forwarded into every loop config so hosts can retune it per session.
-- `packages/agent/src/index.ts`: exports the watchdog module's public surface (the coding agent's interactive working line reuses `StreamRateMeter` and `estimateStreamedUnits`).
+- `packages/agent/src/stream-throughput-watchdog.ts` is deleted.
+- `packages/agent/src/agent-loop.ts`: the assistant event reader no longer builds a rate watchdog, records streamed units or aborts the request controller on a rate verdict. It is back to the two silence bounds - the stream-start bound until the first event, and the inter-event idle bound.
+- `packages/agent/src/types.ts`: `AgentLoopConfig.streamThroughput` removed.
+- `packages/agent/src/agent.ts`: `AgentOptions.streamThroughput`, the public field and its forwarding into every loop config removed.
+- `packages/agent/src/index.ts`: the watchdog module's exports removed.
 
 ### Why
 
-- Every other guard on a live stream detects SILENCE: the stream-start bound stops applying once the first event arrives (`useStartBound = !sawFirstEvent`) and the idle bound is re-armed by every event. A provider answering at ~2 tok/s therefore tripped nothing while the session was unusable (senpi#1739, reported for `gpt-6-astra`). Compaction already bounds this class with a wall-clock budget; the main turn cannot use a wall clock because tool-using turns are legitimately long, so the guard measures rate over a trailing window instead.
+- The floor failed healthy turns: a stream measured at 6.1 tok/s over the 20s window had its request aborted mid tool call, and thinking-heavy models and gateways that batch several tokens into one delta routinely sustain rates under the shipped 8 tok/s floor. Aborting the controller also discarded the partial answer instead of delivering it slowly. The guard is withdrawn rather than retuned, so these files match their pre-guard shape again.
 
 ### Why an extension could not handle it
 
-- The measurement has to happen between the provider iterator and the loop, on the same controller that can abort the in-flight request. No extension hook sits there, and an extension cannot fail the turn with a retryable error the session router understands.
+- The bound lived inside the agent loop's stream reader, which no extension can observe or replace; removing it likewise has to happen here.
 
 ### Expected merge conflict zones
 
-- MEDIUM: `packages/agent/src/agent-loop.ts` around `createAssistantEventReader` / `readNextAssistantEvent`, which upstream also edits for the idle and start bounds. Keep the split: silence -> start/idle errors, sustained low rate -> `StreamThroughputDegradedError`.
-- LOW: the new option field in `packages/agent/src/types.ts` and `packages/agent/src/agent.ts`.
+- LOW: `createAssistantEventReader` / `readNextAssistantEvent` in `packages/agent/src/agent-loop.ts` are back to the upstream shape, so an upstream edit to the start or idle bounds now applies cleanly.
 
 ## 2026-09-16 - Forward thinking live in the empty-assistant recovery wrapper (#1733)
 

@@ -493,7 +493,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		thinkingBudgets: settingsManager.getThinkingBudgets(),
 		timeoutMs: settingsManager.getAgentStreamIdleTimeoutMs(),
 		streamStartTimeoutMs: settingsManager.getAgentStreamStartTimeoutMs(),
-		streamThroughput: settingsManager.getAgentStreamThroughputOptions(),
 		maxRetryDelayMs: settingsManager.getProviderRetrySettings().maxRetryDelayMs,
 		cursorExecHandlers: (runSignal: AbortSignal) => createSessionCursorExecBridge(sessionRef, () => agent, runSignal),
 	});

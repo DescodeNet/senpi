@@ -1,3 +1,22 @@
+## 2026-09-16 - Live tok/s removed from the working line (senpi#1759)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/working-status.ts`: the optional live-rate parameter and `formatWorkingRateSegment` are removed; the suffix is again `(<elapsed> - <key> to interrupt)`.
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: the `StreamRateMeter` field, its rebuild at assistant `message_start`, the `message_update` unit recording, `getWorkingTokensPerSecond()` and the `stream_throughput_degraded` notice box are removed.
+
+### Why
+
+- The readout existed only to make the agent-loop rate verdict observable while it was measured. That guard aborted healthy turns and was withdrawn (senpi#1759), leaving a per-delta rate as noise on every turn; end-of-turn rate is still reported by the builtin TPS extension.
+
+### Why an extension could not handle it
+
+- The working line and its animation frames are owned by interactive mode; extensions can only post notifications after the turn ends.
+
+### Expected merge conflict zones
+
+- LOW: the working-status suffix helper and the `message_start` / `message_update` cases in `interactive-mode.ts` are back to their pre-guard shape.
+
 ## 2026-09-16 - Stall transcripts read as stalls (senpi#1740)
 
 ### What changed
@@ -15,25 +34,6 @@
 ### Expected merge conflict zones
 
 - LOW: the `case "error"` arm of `createAssistantRenderDescriptors` and one import block.
-
-## 2026-09-16 - Live tok/s on the working line and the throughput-degraded notice (#1739)
-
-### What changed
-
-- `packages/coding-agent/src/modes/interactive/working-status.ts`: `formatWorkingStatusSuffix` is now the single suffix builder and takes an optional live rate, so `formatWorkingStatusMessage` and `formatWorkingStatusMessageFrame` render `Working (1m 12s - 2.1 tok/s - esc to interrupt)` when a rate exists and the previous string when it does not.
-- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: a `StreamRateMeter` (pi-agent-core) is rebuilt at every assistant `message_start` with the configured throughput window, fed from `message_update` text/thinking deltas, and read only while an assistant message is streaming, so tool time never dilutes the displayed rate. A `stream_throughput_degraded` session event renders an error notice naming the measured rate and reuses the configured-chain-absent copy ("No fallback chain configured - set one with /fallback.").
-
-### Why
-
-- senpi#1739: a crawling turn was indistinguishable from a healthy one - the working line showed elapsed time only, and the builtin TPS extension reports tok/s only after `agent_end`, far too late to route. The rate must be visible while the turn crawls, and the no-fallback termination needs the same explanation the server-fallback abort already gives.
-
-### Why an extension could not handle it
-
-- The working line and its animation frames are owned by interactive mode; extensions can only post notifications after the turn ends.
-
-### Expected merge conflict zones
-
-- LOW: the working-status suffix helper and the `message_start` / `message_update` cases in `interactive-mode.ts`.
 
 ## 2026-09-16 - /rename session command
 
