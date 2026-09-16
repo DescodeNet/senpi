@@ -120,6 +120,15 @@ if (isRootCommand(args) && (args.includes("--version") || args.includes("-v"))) 
     console.log(DISPLAY_VERSION);
     process.exit();
 }
+// Help is static text plus the flags extensions registered, so a launch that already knows those
+// flags must not import the engine graph to print them. The import stays dynamic for the same
+// reason `cli-main` is: a static one would evaluate that graph before this answer.
+if (isRootCommand(args) && args.some((arg) => arg === "--help" || arg === "-h")) {
+    const { tryPrintHelpWithoutEngine } = await import("./cli/help-fast-path.js");
+    if (tryPrintHelpWithoutEngine(args)) {
+        process.exit();
+    }
+}
 if (isMissingBundledWorkspaceDependencies(getPackageDir())) {
     if (await handleBootstrapSelfUpdate(args)) {
         process.exit();
