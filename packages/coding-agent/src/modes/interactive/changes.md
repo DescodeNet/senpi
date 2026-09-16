@@ -1,13 +1,13 @@
-## 2026-09-16 - Live tok/s removed from the working line (senpi#1759)
+## 2026-09-16 - Live rate readout removed from the working line (senpi#1759)
 
 ### What changed
 
-- `packages/coding-agent/src/modes/interactive/working-status.ts`: the optional live-rate parameter and `formatWorkingRateSegment` are removed; the suffix is again `(<elapsed> - <key> to interrupt)`.
-- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: the `StreamRateMeter` field, its rebuild at assistant `message_start`, the `message_update` unit recording, `getWorkingTokensPerSecond()` and the `stream_throughput_degraded` notice box are removed.
+- `packages/coding-agent/src/modes/interactive/working-status.ts`: the optional live-rate parameter and the helper that rendered it are removed; the suffix is again `(<elapsed> - <key> to interrupt)`.
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: the per-turn rate meter, its rebuild at assistant `message_start`, the `message_update` unit recording, the reader the working line called, and the notice box for the agent loop's rate verdict are removed.
 
 ### Why
 
-- The readout existed only to make the agent-loop rate verdict observable while it was measured. That guard aborted healthy turns and was withdrawn (senpi#1759), leaving a per-delta rate as noise on every turn; end-of-turn rate is still reported by the builtin TPS extension.
+- The readout existed only to make that verdict observable while it was measured. The guard aborted healthy turns and was withdrawn (senpi#1759), leaving a per-delta rate as noise on every turn; end-of-turn rate is still reported by the builtin TPS extension.
 
 ### Why an extension could not handle it
 

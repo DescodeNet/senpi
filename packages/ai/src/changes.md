@@ -1,8 +1,8 @@
-## Throughput-degraded classification withdrawn (2026-09-16)
+## Slow-stream classification withdrawn (2026-09-16)
 
 ### What changed
 
-- `packages/ai/src/utils/retry.ts`: the `"provider stream throughput degraded"` alternation is removed from `RETRYABLE_PROVIDER_ERROR_PATTERN`, and `isProviderStreamThroughputDegradedError` with its anchored pattern is deleted. The silence-stall classifiers and `describeProviderStallForUser` are untouched.
+- `packages/ai/src/utils/retry.ts`: the retryable alternation and the anchored predicate that recognised the agent loop's rate verdict are removed. The silence-stall classifiers and `describeProviderStallForUser` are untouched.
 
 ### Why
 

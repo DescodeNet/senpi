@@ -1,16 +1,15 @@
-## 2026-09-16 - Stream throughput guard withdrawn; the loop bounds silence only (senpi#1759)
+## 2026-09-16 - Fork-local rate guard withdrawn; the loop bounds silence only (senpi#1759)
 
 ### What changed
 
-- `packages/agent/src/stream-throughput-watchdog.ts` is deleted.
-- `packages/agent/src/agent-loop.ts`: the assistant event reader no longer builds a rate watchdog, records streamed units or aborts the request controller on a rate verdict. It is back to the two silence bounds - the stream-start bound until the first event, and the inter-event idle bound.
-- `packages/agent/src/types.ts`: `AgentLoopConfig.streamThroughput` removed.
-- `packages/agent/src/agent.ts`: `AgentOptions.streamThroughput`, the public field and its forwarding into every loop config removed.
-- `packages/agent/src/index.ts`: the watchdog module's exports removed.
+- `packages/agent/src/agent-loop.ts`: the assistant event reader no longer measures how fast a live stream delivers, and no longer aborts the request controller on a rate verdict. It is back to the two silence bounds - the stream-start bound until the first event, and the inter-event idle bound.
+- `packages/agent/src/types.ts`: the loop-config option that carried the rate thresholds is removed.
+- `packages/agent/src/agent.ts`: the matching runtime option, its public field and its forwarding into every loop config are removed.
+- `packages/agent/src/index.ts`: the exports that published that module's surface are removed, and the module itself is deleted.
 
 ### Why
 
-- The floor failed healthy turns: a stream measured at 6.1 tok/s over the 20s window had its request aborted mid tool call, and thinking-heavy models and gateways that batch several tokens into one delta routinely sustain rates under the shipped 8 tok/s floor. Aborting the controller also discarded the partial answer instead of delivering it slowly. The guard is withdrawn rather than retuned, so these files match their pre-guard shape again.
+- The guard failed healthy turns: a normal stream measured just under the shipped floor had its request aborted mid tool call, and thinking-heavy models and gateways that batch several tokens into one delta routinely stay under it. Aborting the controller also discarded the partial answer instead of delivering it slowly. It is withdrawn rather than retuned, so these files match their pre-guard shape again.
 
 ### Why an extension could not handle it
 
