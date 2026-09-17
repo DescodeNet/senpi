@@ -21,49 +21,64 @@ export function formatSkillInvocationPrompt(
 }
 
 /** Parsed skill block from a user message */
-export interface ParsedSkillBlock {
-	name: string;
-	location: string;
-	content: string;
-	userMessage: string | undefined;
+export interface ParsedSkillBlockSkill {
+	readonly name: string;
+	readonly location: string;
+	readonly content: string;
+}
+
+/** `name`/`location`/`content` mirror the first entry of `skills` for older callers. */
+export interface ParsedSkillBlock extends ParsedSkillBlockSkill {
+	readonly skills: readonly ParsedSkillBlockSkill[];
+	readonly userMessage: string | undefined;
+}
+
+const SKILL_INSTRUCTION_PATTERN =
+	/^The user explicitly invoked the "([^"]+)" skill\. Follow the instructions in <skill-instruction> as binding for this request, while respecting higher-priority instructions\.\n\n<skill-instruction name="([^"]+)" location="([^"]+)">\n([\s\S]*?)\n<\/skill-instruction>/;
+
+function matchSkillInstruction(text: string): { skill: ParsedSkillBlockSkill; length: number } | null {
+	const match = text.match(SKILL_INSTRUCTION_PATTERN);
+	if (!match || match[1] !== match[2]) return null;
+	return { skill: { name: match[1], location: match[3], content: match[4] }, length: match[0].length };
+}
+
+function toParsedSkillBlock(
+	skills: readonly ParsedSkillBlockSkill[],
+	userMessage: string | undefined,
+): ParsedSkillBlock | null {
+	const first = skills[0];
+	if (!first) return null;
+	return { ...first, skills, userMessage };
 }
 
 /**
- * Parse a skill block from message text.
+ * Parse every chained skill block from message text.
  * Returns null if the text doesn't contain a skill block.
  */
 export function parseSkillBlock(text: string): ParsedSkillBlock | null {
-	const instructionPattern =
-		/^The user explicitly invoked the "([^"]+)" skill\. Follow the instructions in <skill-instruction> as binding for this request, while respecting higher-priority instructions\.\n\n<skill-instruction name="([^"]+)" location="([^"]+)">\n([\s\S]*?)\n<\/skill-instruction>/;
-	const instructionMatch = text.match(instructionPattern);
-	if (instructionMatch) {
-		if (instructionMatch[1] !== instructionMatch[2]) return null;
-		let remainder = text.slice(instructionMatch[0].length);
+	const first = matchSkillInstruction(text);
+	if (first) {
+		const skills = [first.skill];
+		let remainder = text.slice(first.length);
 		while (remainder.startsWith("\n\nThe user explicitly invoked the ")) {
-			const chainedMatch = remainder.slice(2).match(instructionPattern);
-			if (!chainedMatch || chainedMatch[1] !== chainedMatch[2]) return null;
-			remainder = remainder.slice(chainedMatch[0].length + 2);
+			const chained = matchSkillInstruction(remainder.slice(2));
+			if (!chained) return null;
+			skills.push(chained.skill);
+			remainder = remainder.slice(chained.length + 2);
 		}
 		const requestMatch = remainder.match(/^\n\n<user-request>\n([\s\S]*?)\n<\/user-request>$/);
 		if (remainder && !requestMatch) return null;
-		return {
-			name: instructionMatch[1],
-			location: instructionMatch[3],
-			content: instructionMatch[4],
-			userMessage: requestMatch?.[1].trim() || undefined,
-		};
+		return toParsedSkillBlock(skills, requestMatch?.[1].trim() || undefined);
 	}
 
 	const legacyMatch = text.match(
 		/^<skill name="([^"]+)" location="([^"]+)">\n([\s\S]*?)\n<\/skill>(?:\n\n([\s\S]+))?$/,
 	);
 	if (!legacyMatch) return null;
-	return {
-		name: legacyMatch[1],
-		location: legacyMatch[2],
-		content: legacyMatch[3],
-		userMessage: legacyMatch[4]?.trim() || undefined,
-	};
+	return toParsedSkillBlock(
+		[{ name: legacyMatch[1], location: legacyMatch[2], content: legacyMatch[3] }],
+		legacyMatch[4]?.trim() || undefined,
+	);
 }
 
 export type SkillInvocationSyntax = "dollar" | "slash";
@@ -78,17 +93,32 @@ export interface SkillInvocationToken {
 
 export const MAX_SKILL_INVOCATION_TOKENS_PER_PROMPT = 64;
 
+const SKILL_NAMESPACE = "skill:";
 const LEADING_SKILL_INVOCATION_PATTERN = /^(?:\/skill:([a-zA-Z][a-zA-Z0-9:_-]*)|\$([a-zA-Z][a-zA-Z0-9:_-]*))(?=\s|$)/;
-const INLINE_DOLLAR_SKILL_INVOCATION_PATTERN = /(^|\s)\$skill:([a-zA-Z][a-zA-Z0-9:_-]*)(?=\s|$)/g;
+const INLINE_DOLLAR_SKILL_INVOCATION_PATTERN = /(^|\s)\$([a-zA-Z][a-zA-Z0-9:_-]*)(?=\s|$)/g;
+
+export interface ParseSkillInvocationOptions {
+	/** Loaded skill names; a bare inline `$name` is executable only when it is one of them. */
+	readonly knownSkillNames?: ReadonlySet<string>;
+}
+
+function inlineSkillName(token: string, knownSkillNames: ReadonlySet<string> | undefined): string | null {
+	if (token.startsWith(SKILL_NAMESPACE)) return token.slice(SKILL_NAMESPACE.length) || null;
+	return knownSkillNames?.has(token) ? token : null;
+}
 
 /**
  * Find explicit skill invocation tokens without treating ordinary inline dollar
  * prose (for example `$HOME`) as executable.
  *
  * Leading runs accept `/skill:name`, `$name`, and `$skill:name`. Outside the
- * leading run only the desktop's explicit `$skill:name` token is executable.
+ * leading run the explicit `$skill:name` token is always executable and a bare
+ * `$name` is executable when it names a loaded skill.
  */
-export function parseSkillInvocationTokens(text: string): SkillInvocationToken[] {
+export function parseSkillInvocationTokens(
+	text: string,
+	options: ParseSkillInvocationOptions = {},
+): SkillInvocationToken[] {
 	const tokens: SkillInvocationToken[] = [];
 	let cursor = 0;
 
@@ -113,12 +143,15 @@ export function parseSkillInvocationTokens(text: string): SkillInvocationToken[]
 
 	INLINE_DOLLAR_SKILL_INVOCATION_PATTERN.lastIndex = cursor;
 	for (const match of text.matchAll(INLINE_DOLLAR_SKILL_INVOCATION_PATTERN)) {
-		const start = (match.index ?? 0) + match[1].length;
+		const token = match[2] ?? "";
+		const name = inlineSkillName(token, options.knownSkillNames);
+		if (name === null) continue;
+		const start = (match.index ?? 0) + (match[1] ?? "").length;
 		tokens.push({
-			name: match[2],
+			name,
 			syntax: "dollar",
 			start,
-			end: start + `$skill:${match[2]}`.length,
+			end: start + token.length + 1,
 			position: "inline",
 		});
 		if (tokens.length >= MAX_SKILL_INVOCATION_TOKENS_PER_PROMPT) break;

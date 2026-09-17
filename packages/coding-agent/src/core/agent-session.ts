@@ -4052,14 +4052,16 @@ export class AgentSession {
 
 	/**
 	 * Expand explicit skill invocations to their full content.
-	 * Leading runs accept slash and dollar syntax; inline expansion is limited to
-	 * the desktop's explicit `$skill:name` token so ordinary dollar prose stays literal.
+	 * Leading runs accept slash and dollar syntax; inline `$name` expands only when
+	 * it names a loaded skill, so ordinary dollar prose such as `$HOME` stays literal.
 	 */
 	private _expandSkillCommand(text: string): string {
-		const invocationTokens = parseSkillInvocationTokens(text);
+		const skills = this.resourceLoader.getSkills().skills;
+		const invocationTokens = parseSkillInvocationTokens(text, {
+			knownSkillNames: new Set(skills.map((skill) => skill.name)),
+		});
 		if (invocationTokens.length === 0) return text;
 
-		const skills = this.resourceLoader.getSkills().skills;
 		const expandedSkillNames = new Set<string>();
 		const skillBlocks: SkillInvocationPromptSkill[] = [];
 		const invocationMetadata: Array<{
