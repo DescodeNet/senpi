@@ -21,6 +21,30 @@
 
 - LOW: the `settleActors`/`acceptActors` aggregation sites in `session-event-writer.ts`, `DEFAULT_STALL_MS` and its comment in `socket-event-fanout.ts`, and the removed `socketSink` body in `multi-session-host.ts` (now `socket-sink.ts`). Upstream has no socket fanout.
 
+## 2026-09-17 - Retain a session across its last client's disconnect (#1776)
+
+### What changed
+
+- `open_session` accepts `retain_on_disconnect?: boolean` (default false). A retained session answers a connection drop with a DETACH: `beginClose` releases the attachment but leaves the entry `open` at zero attachments instead of transitioning to `closing`, in both the worker registry (`worker-session-registry.ts`) and the in-process registry (`session-teardown.ts`, shared by `session-registry.ts`).
+- `session-command-router.ts` passes the flag as host lifecycle policy (`RpcSessionOpenOptions`), not as part of the immutable launch profile, claims a drop-release with `{ detach: true }`, and skips the streaming-defer for retained sessions - there is no teardown to defer, so the attachment is released immediately and the turn settles on its own.
+- `list_sessions` rows carry an additive `attachments` count; `get_protocol_info` advertises the host capability `retain_on_disconnect` in multi-session mode.
+- Wire and client surface: `rpc-types.ts` types the request field and the additive `attachments` row field, `custom-capability.ts` defines the `RETAIN_ON_DISCONNECT_CAPABILITY` host string (advertised only by the multi-session router, since classic mode has no attachment refcount), `rpc-client.ts` exposes both to the in-repo client (`openSession({ retain_on_disconnect })`, `listSessions()[].attachments`), and `rpc-mode.ts` carries the updated D1 normative table in its module documentation.
+- `claimClose` options are typed so `drainAttachments` and `detach` cannot be combined: draining ENDS a session (dispose, idle eviction) and must always reach zero, while only a detach may be answered by staying open.
+
+### Why
+
+- Every session owned by a dropped connection went through the refcounted close, so a client that lost its socket for one second lost every idle session it owned and its reconnect raced the teardown (see #1774 for the stall cut that produces those disconnects). A reconnecting client needs the session to outlive the socket and to be re-attached by `sessionPath`.
+- Retention is deliberately not a new lifetime: an explicit `close_session`, host shutdown and the idle-eviction window still end a retained session, and an attach may only turn retention on, never off for clients already relying on it.
+
+### Why an extension could not handle it
+
+- Attachment refcounting, teardown and capability advertisement are host lifecycle; no extension surface reaches them.
+
+### Expected merge conflict zones
+
+- LOW: `beginSessionClose()` in `session-teardown.ts`, `beginClose()`/`attach()`/`list()` in `worker-session-registry.ts`, `openSession()`/`list()` in `session-registry.ts`, and `open()`/`releaseConnection()`/`claimClose()` in `session-command-router.ts`.
+- LOW: the additive field/type lines in `rpc-types.ts`, `custom-capability.ts`, `rpc-client.ts` and the D1 table in `rpc-mode.ts`; the advertised capability set is pinned exactly by `test/rpc-multi-session.test.ts` and `test/auto-title-sessions-flag.test.ts`, so any lane adding a capability conflicts there. Does not touch `socket-event-fanout.ts`, `session-event-writer.ts` or `session-worker-client.ts`.
+
 ## 2026-09-15 - Watchdog ppid fallback: zero-spawn supervisor check (#1507)
 
 ### What changed
