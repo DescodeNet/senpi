@@ -1,3 +1,22 @@
+## 2026-09-17 - Skill mentions render bold in the composer, transcript lists every skill (senpi#1778)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/theme/theme.ts`: optional `skillMention` theme color (falls back to `mdLink`); `getEditorTheme().mention` renders a resolved `$skill` token bold in that color. `packages/coding-agent/src/modes/interactive/theme/theme-json.ts` and `packages/coding-agent/src/modes/interactive/theme/theme-schema.json` accept the optional key.
+- `packages/coding-agent/src/modes/interactive/components/skill-invocation-message.ts`: the collapsed row lists every invoked skill (`[skill] a, b`) and the expanded view shows one name header and body per skill, from `ParsedSkillBlock.skills`.
+
+### Why
+
+- senpi#1778: Codex renders bound skill mentions in a distinct style; multi-skill prompts showed only the first skill in the transcript.
+
+### Why an extension could not handle it
+
+- Editor theme wiring and the built-in transcript renderer are host-owned.
+
+### Expected merge conflict zones
+
+- LOW: `ThemeColor` union / fallback tables; `updateDisplay()` in the skill component.
+
 ## 2026-09-16 - Live rate readout removed from the working line (senpi#1759)
 
 ### What changed
