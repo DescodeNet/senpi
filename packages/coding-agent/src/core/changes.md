@@ -1,5 +1,25 @@
 # changes
 
+## 2026-09-17 - Inline skill mentions expand on submit (senpi#1778)
+
+### What changed
+
+- New `packages/coding-agent/src/core/skill-invocation.ts` holds `formatSkillInvocationPrompt`, `parseSkillBlock`, `parseSkillInvocationTokens`, `removeSkillInvocationTokens` and the two caps (moved out of `packages/coding-agent/src/core/agent-session.ts`, which re-exports them and passes the loaded skill names from `_expandSkillCommand`).
+- `parseSkillInvocationTokens(text, { knownSkillNames })`: outside the leading run a bare `$name` is executable when it names a loaded skill; `$skill:name` stays executable without the list; `$HOME`, `$1` and unknown names stay literal. The explicit form is unchanged for the desktop.
+- `parseSkillBlock` returns `skills: ParsedSkillBlockSkill[]` for every chained block (`name`/`location`/`content` mirror the first). `packages/coding-agent/src/core/export-html/template.js` (parser + tree/entry render) and `packages/coding-agent/src/core/export-html/template.css` (`.skill-invocation-name`) follow the same shape and list every invoked skill.
+
+### Why
+
+- senpi#1778: an inline `$commit` reached the model as literal text and the transcript named only the first of several expanded skills.
+
+### Why an extension could not handle it
+
+- Skill expansion runs in the session's prompt path before extension `input` handlers see the composed text.
+
+### Expected merge conflict zones
+
+- MEDIUM: the skill-invocation section of `agent-session.ts` is now an import + re-export block; upstream edits to those functions must land in `skill-invocation.ts`.
+
 ## 2026-09-16 - Slow-stream retry branch and its settings withdrawn (senpi#1759)
 
 ### What changed
