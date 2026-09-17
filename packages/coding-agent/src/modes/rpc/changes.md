@@ -1,3 +1,26 @@
+## 2026-09-17 - Socket credit on queue acceptance, dead-peer stall budget, deliverable cut notice (#1774)
+
+### What changed
+
+- `session-event-writer.ts`: `waitForSessionBackpressure` now settles socket destinations through `acceptActors` (`SocketEventSinkActor.waitForAcceptance()`), i.e. the record having been ACCEPTED into each connection's bounded queue, instead of `settleActors` (drain to empty). `flush()` and `drainUntilEmpty()` keep `settleActors`, so close/shutdown still drain. The empty-fanout (stdio/embedder) path still returns `flush()` and keeps its stdout backpressure wait. The actor lookup moved into a private `sessionActors()`.
+- `socket-event-fanout.ts`: `DEFAULT_STALL_MS` 4000 -> 30000, redocumented as a dead-peer liveness budget that is independent of `SESSION_WORKER_LIMITS.controlMs`; new `waitForAcceptance()` states the credit contract at the queue that owns it. Byte overflow at `maxQueueBytes` still cuts immediately, and the stall cut is otherwise unchanged (notice + `onFailure(SocketEventQueueStallError)`).
+- `socket-sink.ts` (extracted from `multi-session-host.ts`, same behaviour for `writeRaw`/`waitForBackpressure`): `close()` half-closes with `socket.end()` and destroys only after `SOCKET_CUT_GRACE_MS` (5 s) if the peer has still not read, instead of `socket.destroy()`. `writeRaw` is a no-op after the cut (no write-after-end on a connection that is going away).
+
+### Why
+
+- Worker credit was returned only after every connection's queue had drained to the kernel (`session-worker-client.ts:224` -> `waitForSessionBackpressure` -> `actor.flush()`), so the slowest client paced the producing worker, whose thread waits at most `controlMs` (5 s). That forced the stall cut below 5 s, and a client merely busy for 4 s with >= 16 KB pending (macOS unix stream buffers are 8 KB each way) was cut as dead, releasing every session it owned. Credit at acceptance removes the coupling; the cut becomes a real liveness detector.
+- The notice that explains a cut was written to a transport the peer was not reading and then dropped by `socket.destroy()`, so clients saw an unexplained `end`. A half-close delivers it to any peer that resumes within the grace, and the grace keeps a peer that never returns bounded.
+- Accepted trade-off: the producer is no longer paced by the reader, so a session that outruns a peer fills that peer's 64 MiB queue and the peer is cut on overflow. Producer-side bounding of multi-MB bursts is #1438.
+- Tests: `test/suite/rpc-socket-credit.test.ts` (10 s stalled peer, 50 records/~200 KiB, credit due with zero clock movement, no cut, all records delivered after resume), `test/suite/rpc-socket-cut-notice.test.ts` (real unix socket pair: stall and overflow notices readable before EOF inside the grace, destroy at the grace), `test/suite/rpc-socket-stall.test.ts` (budget pinned at 30 s and above `controlMs`; credit without drain; only the dead peer cut; the stdio lane survives).
+
+### Why an extension could not handle it
+
+- Transport flow control, worker credit and socket teardown are host infrastructure below the extension boundary.
+
+### Expected merge conflict zones
+
+- LOW: the `settleActors`/`acceptActors` aggregation sites in `session-event-writer.ts`, `DEFAULT_STALL_MS` and its comment in `socket-event-fanout.ts`, and the removed `socketSink` body in `multi-session-host.ts` (now `socket-sink.ts`). Upstream has no socket fanout.
+
 ## 2026-09-15 - Watchdog ppid fallback: zero-spawn supervisor check (#1507)
 
 ### What changed
