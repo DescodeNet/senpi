@@ -244,15 +244,23 @@ by count and bytes without imposing a new timeout on long-running commands. The 
 window is a separate client-side wait: the host normally reports its earlier 30-second failure within that window,
 but a slow transport can delay delivery. Neither timeout proves worker exit or permits concurrent reopening.
 Display updates coalesce to one pending update and one latest value; UI cancellation and close have separate control
-messages. IPC output and snapshots are limited to 16 MiB per record, with one acknowledged record at a time. Credit
-returns after the session's destinations consume their output, not merely on IPC receipt. A five-second credit
+messages. IPC output and snapshots are limited to 16 MiB per record, with one acknowledged record at a time. Over a
+socket host, credit returns as soon as every destination of that session has ACCEPTED the record into its own bounded
+queue (64 MiB per connection), not when the peer's kernel has drained it: a client that is merely busy cannot withhold
+the producing worker's credit. On the shared stdio lane credit still waits for stdout backpressure. A five-second credit
 failure closes that session visibly (`session_error` followed by `session_closed`), rather than retaining an
-unbounded queue. Socket queues retain their existing independent overflow/disconnect behavior, and a socket peer that
-stops reading is cut before it can consume that credit budget: a write the peer has not accepted within 4 seconds
-(`DEFAULT_STALL_MS`, below the 5-second worker deadline) is treated like a byte overflow — that connection receives one
-`overflow` record with `error: "stalled, resync required"`, is closed, and must reconnect and resynchronize — while the
-session keeps running and its other destinations keep receiving output. A failed or cut connection never withholds a
-session's credit and never fails the shared host writer; only the stdio lane can. The default stdio
+unbounded queue. Socket queues keep their independent overflow/disconnect behavior: a connection whose queue would
+exceed 64 MiB is cut immediately, and a peer that has not accepted a single pending write within 30 seconds
+(`DEFAULT_STALL_MS`) is cut as a dead peer. That budget is a transport liveness bound and is deliberately independent
+of the 5-second worker control deadline — a busy client is not a dead one. A cut connection receives one `overflow`
+record (`error: "overflow, resync required"` or `"stalled, resync required"`); the host then half-closes the socket
+instead of destroying it, so a peer that resumes reading within a 5-second grace (`SOCKET_CUT_GRACE_MS`) still receives
+that notice, and everything already written to it, before EOF. A peer that is still silent when the grace expires has
+its socket destroyed. A cut peer must reconnect and resynchronize, while the session keeps running and its other
+destinations keep receiving output. A failed or cut connection never withholds a session's credit and never fails the
+shared host writer; only the stdio lane can. Because credit no longer paces a session against its slowest reader, a
+session that outruns a peer fills that peer's 64 MiB queue instead of slowing down, and that peer is then cut on
+overflow. The default stdio
 queue is bounded at 64 MiB or 4096 records, with reserved terminal-failure records and one control-overflow notice.
 Close admission counts both queued output and pending close replies (including their serialized bytes) before
 releasing an attachment or waiting for teardown. An admitted first closer reserves its lifecycle and terminal reply;
