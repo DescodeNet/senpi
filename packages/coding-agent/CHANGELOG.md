@@ -33,6 +33,7 @@
 - A provider-owned login pool is merged onto the stored pool at commit time instead of overwriting it with the pre-browser-flow snapshot, so a sibling account's rotated refresh token and rate-limit block survive another account's interactive login.
 - The Claude SDK lane's session-lock and bare `invalid_request` remint, and its `Provider is not configured:` fallback exclusion, are scoped to that provider: provider-agnostic stream stalls keep consuming the shared same-model retry budget and still escalate to the configured fallback chain, and another provider's auth miss or `invalid_request` still hops the chain.
 - OAuth login no longer paints two live `>` prompts when the browser callback finishes before the paste-code field is submitted, and an interleaved waiting or info step replaces (never duplicates) the live `(to cancel)`/`(to close)` hint row.
+- Native image generation is no longer refused for official OpenAI Codex OAuth sessions: the `openai-codex-responses` transport on the exact `chatgpt.com` host now passes the native image gate without changing the model's API or base URL, and the bundled `gpt-image-gen` skill is contributed whenever native generation is active, even without client image credentials; proxies, host lookalikes, malformed URLs, explicit opt-out, and the global disable flag keep their prior behavior.
 
 ### Removed
 
