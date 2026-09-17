@@ -4,12 +4,12 @@ import { Worker } from "node:worker_threads";
 import { afterEach, expect, it, vi } from "vitest";
 import { parseArgs } from "../../src/cli/args.ts";
 import { buildRpcSessionState } from "../../src/modes/rpc/connection-handler.ts";
-import type { RpcCommand } from "../../src/modes/rpc/rpc-types.ts";
 import { SessionCommandRouter } from "../../src/modes/rpc/session-command-router.ts";
 import { SessionEventWriter } from "../../src/modes/rpc/session-event-writer.ts";
 import type { HostToSessionWorker, WorkerSnapshot } from "../../src/modes/rpc/session-worker-protocol.ts";
 import { WorkerSessionRegistry } from "../../src/modes/rpc/worker-session-registry.ts";
 import { createHarness } from "./harness.ts";
+import { startWorkerHost } from "./rpc-worker-host-support.ts";
 
 vi.mock("node:worker_threads", async () => {
 	const { EventEmitter } = await import("node:events");
@@ -29,7 +29,7 @@ afterEach(() => {
 });
 
 type WireRecord = Record<string, unknown> & { id?: string; type?: string; sessionId?: string };
-type ListedSession = { sessionId: string; status: string; sessionPath?: string; attachments?: number };
+type ListedSession = { sessionId: string; status: string; sessionPath?: string; attachments: number };
 
 /** Fields the host accepts on `open_session`, including the retention flag under test. */
 interface OpenFields {
@@ -146,8 +146,7 @@ async function retainHost(options: { idleEvictionMs?: number } = {}) {
 		async open(connection: string, fields: OpenFields): Promise<WireRecord | undefined> {
 			const id = `open-${++requests}`;
 			const failure = await writer.withConnection(connect(connection), () =>
-				// RED: `retain_on_disconnect` is not part of the typed open_session command yet.
-				router.handle({ type: "open_session", id, ...fields } as RpcCommand),
+				router.handle({ type: "open_session", id, ...fields }),
 			);
 			await settle();
 			return (failure as WireRecord | undefined) ?? records.find((record) => record.id === id);
@@ -282,6 +281,29 @@ it("advertises retain_on_disconnect in get_protocol_info", async () => {
 	expect(data?.capabilities).toContain("retain_on_disconnect");
 	expect(data?.capabilities).toContain("multi_session");
 });
+
+// The drop semantics above are pinned deterministically on the router; this one
+// pins the wire surface on a REAL socket host and real session worker: the flag
+// is accepted, the capability is advertised, the attachment count is published,
+// and an explicit close still closes a retained session.
+it("advertises the capability and accepts the flag on a real socket host", async () => {
+	const host = await startWorkerHost(undefined, { socket: true });
+	try {
+		const client = await host.connect();
+		const protocol = await client.request({ type: "get_protocol_info" });
+		expect(protocol.data?.capabilities).toContain("retain_on_disconnect");
+		const opened = await client.request({ type: "open_session", cwd: host.cwd, retain_on_disconnect: true });
+		expect(opened.success).toBe(true);
+		const sessionId = opened.data?.sessionId;
+		expect((await client.request({ type: "list_sessions" })).data?.sessions).toEqual([
+			expect.objectContaining({ sessionId, status: "open", attachments: 1 }),
+		]);
+		expect((await client.request({ type: "close_session", sessionId })).success).toBe(true);
+		expect((await client.request({ type: "list_sessions" })).data?.sessions).toEqual([]);
+	} finally {
+		await host.dispose();
+	}
+}, 60_000);
 
 it("parks a retained detached session at the idle window and reopens it by path", async () => {
 	// Given: a retained session detached from every connection.
