@@ -14,6 +14,7 @@ const ENTER = "\r";
 const ESC = "\x1b";
 const CTRL_C = "\x03";
 const TAB = "\t";
+const SHIFT_TAB = "\x1b[Z";
 const SPACE = " ";
 const CTRL_ENTER = "\x1b[13;5u";
 
@@ -124,13 +125,63 @@ describe("AskUserQuestionComponent", () => {
 		expect(h.doneCalls[0]?.status).toBe("answered");
 	});
 
-	it("keeps multi-select choices when Enter confirms them", () => {
+	it.each(["initial highlight", "Down then Up"])(
+		"selects option 1 with Enter through key dispatch and stays until Tab/Submit (#8249): %s",
+		(navigation) => {
+			const h = mount({
+				...buildRequest(),
+				timeoutMs: 0,
+				questions: [
+					{
+						id: "q",
+						header: "Options",
+						question: "Which options?",
+						options: ["Option A", "Option B", "Option C", "Option D"].map((label) => ({ label })),
+						multiSelect: true,
+					},
+				],
+			});
+			if (navigation === "Down then Up") {
+				h.component.handleInput(DOWN);
+				h.component.handleInput(UP);
+			}
+			expect(h.render()).toContain("→ 1. Option A");
+
+			h.component.handleInput(ENTER);
+
+			expect(h.progressCalls.at(-1)?.answers?.q?.selected).toEqual(["Option A"]);
+			expect(h.render()).toContain("→ 1. Option A ✓");
+			expect(h.render()).toContain("Which options?");
+			expect(h.render()).not.toContain("Review your answers");
+			expect(h.doneCalls).toHaveLength(0);
+
+			h.component.handleInput(ENTER);
+
+			expect(h.progressCalls.at(-1)?.answers).toEqual({});
+			expect(h.render()).not.toContain("1. Option A ✓");
+			expect(h.doneCalls).toHaveLength(0);
+
+			h.component.handleInput(ENTER);
+			h.component.handleInput(TAB);
+			expect(h.render()).toContain("Review your answers");
+			expect(h.doneCalls).toHaveLength(0);
+			h.component.handleInput(ENTER);
+
+			expect(h.doneCalls).toHaveLength(1);
+			expect(h.doneCalls[0]).toMatchObject({
+				status: "answered",
+				answers: { q: { selected: ["Option A"] } },
+				unanswered: [],
+			});
+		},
+	);
+
+	it("keeps multi-select choices when Tab moves to Submit after Enter toggles them", () => {
 		const h = mount();
 
 		h.component.handleInput(TAB);
-		h.component.handleInput(SPACE);
 		h.component.handleInput(ENTER);
-		h.component.handleInput(ENTER);
+		h.component.handleInput(TAB);
 		h.component.handleInput(ENTER);
 
 		expect(h.doneCalls).toHaveLength(1);
@@ -148,7 +199,7 @@ describe("AskUserQuestionComponent", () => {
 		h.component.handleInput(DOWN);
 
 		h.component.handleInput(ENTER);
-		expect(h.render()).toContain("Your answer (enter to save, esc to discard)");
+		expect(h.render()).toContain("Your answer (");
 	});
 
 	it("requires confirmation before dismissing a question with draft answers", () => {
@@ -224,7 +275,7 @@ describe("AskUserQuestionComponent", () => {
 		expect(single.doneCalls[0]?.status).toBe("answered");
 	});
 
-	it("keeps an async one-question selection open for an optional comment", () => {
+	it("submits an async one-question digit selection immediately", () => {
 		const request = buildRequest();
 		const asyncQuestion = mount({
 			...request,
@@ -234,8 +285,11 @@ describe("AskUserQuestionComponent", () => {
 
 		asyncQuestion.component.handleInput("1");
 
-		expect(asyncQuestion.doneCalls).toHaveLength(0);
-		expect(asyncQuestion.render()).toContain("Review your answers");
+		expect(asyncQuestion.doneCalls).toHaveLength(1);
+		expect(asyncQuestion.doneCalls[0]).toMatchObject({
+			status: "answered",
+			answers: { auth: { selected: ["OAuth"] } },
+		});
 	});
 
 	it("preserves the first printable character when opening own-answer", () => {
@@ -255,7 +309,7 @@ describe("AskUserQuestionComponent", () => {
 
 		h.component.handleInput("1");
 		h.component.handleInput(SPACE);
-		h.component.handleInput(ENTER);
+		h.component.handleInput(TAB);
 		h.component.handleInput(ENTER);
 
 		expect(h.doneCalls).toHaveLength(1);
@@ -299,6 +353,72 @@ describe("AskUserQuestionComponent", () => {
 		const last = h.progressCalls[h.progressCalls.length - 1];
 		expect(last?.answers?.auth).toEqual({ selected: [], text: "use a vault token" });
 		expect(h.render()).toContain("Which extras should be enabled?");
+	});
+
+	it("clears the own-answer editor when advancing to the next question", () => {
+		const h = mount();
+
+		// Q1: open the own-answer editor and commit a typed answer.
+		h.component.handleInput(DOWN);
+		h.component.handleInput(DOWN);
+		h.component.handleInput(ENTER);
+		h.component.handleInput("use a vault token");
+		h.component.handleInput(ENTER);
+
+		// Q2: the editor must start empty instead of carrying Q1's text over.
+		expect(h.render()).toContain("Which extras should be enabled?");
+		expect(h.render()).not.toContain("use a vault token");
+
+		// Open Q2's own-answer editor, then commit it empty.
+		h.component.handleInput(DOWN);
+		h.component.handleInput(DOWN);
+		h.component.handleInput(ENTER);
+		expect(h.render()).toContain("Your answer (");
+		h.component.handleInput(ENTER);
+
+		const last = h.progressCalls[h.progressCalls.length - 1];
+		expect(last?.answers?.extras).toBeUndefined();
+		expect(h.doneCalls).toHaveLength(0);
+	});
+
+	it.each(["", "   ", "custom answer"])("commits own answer %j without losing selections unless non-empty", (text) => {
+		const request = buildRequest();
+		const h = mount({ ...request, timeoutMs: 0, questions: [request.questions[1]!] });
+		h.component.handleInput(ENTER);
+		h.component.handleInput(DOWN);
+		h.component.handleInput(ENTER);
+		h.component.handleInput(DOWN);
+		h.component.handleInput(ENTER);
+		expect(h.render()).toContain("Your answer (");
+		if (text !== "") h.component.handleInput(text);
+		h.component.handleInput(ENTER);
+
+		const expected =
+			text.trim() === "" ? { selected: ["Verbose logging", "Dry run"] } : { selected: [], text: "custom answer" };
+		expect(h.progressCalls.at(-1)?.answers?.extras).toEqual(expected);
+		expect(h.doneCalls).toHaveLength(0);
+		h.component.handleInput(ENTER);
+		expect(h.doneCalls).toHaveLength(1);
+		expect(h.doneCalls[0]?.answers.extras).toEqual(expected);
+		expect(h.doneCalls[0]?.unanswered).toEqual([]);
+	});
+
+	it("reloads a saved own answer when the question is revisited", () => {
+		const h = mount();
+
+		h.component.handleInput(DOWN);
+		h.component.handleInput(DOWN);
+		h.component.handleInput(ENTER);
+		h.component.handleInput("use a vault token");
+		h.component.handleInput(ENTER);
+
+		// Back to Q1 via the tab bar and reopen its own-answer editor.
+		h.component.handleInput(SHIFT_TAB);
+		h.component.handleInput(DOWN);
+		h.component.handleInput(DOWN);
+		h.component.handleInput(ENTER);
+
+		expect(h.render()).toContain("use a vault token");
 	});
 
 	it("formats the countdown as minutes above five minutes and mm:ss below", () => {

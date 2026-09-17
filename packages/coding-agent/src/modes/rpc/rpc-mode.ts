@@ -28,9 +28,9 @@
  * | Command          | Params                                                                                          | Success data                                    | Notes |
  * | ---------------- | ----------------------------------------------------------------------------------------------- | ----------------------------------------------- | ----- |
  * | `get_protocol_info` | -                                                                                             | `{ protocolVersion: 1, serverVersion, capabilities, mode: "classic"|"multi" }` | Answered in BOTH modes; side-effect-free capability probe. |
- * | `open_session`    | `sessionPath?`, `cwd?`, `provider?`, `modelId?`, `thinkingLevel?`, `permissionPreset?` (all optional; paths MUST be absolute) | `{ sessionId, state: RpcSessionState, attached?: boolean }` | `sessionPath` = today's `--session` semantics (open-if-exists else create persisting there); `provider`/`modelId` applied only on create (resume restores the session's model); params form the immutable launch profile (D8). |
+ * | `open_session`    | `sessionPath?`, `cwd?`, `provider?`, `modelId?`, `thinkingLevel?`, `permissionPreset?`, `retain_on_disconnect?` (all optional; paths MUST be absolute) | `{ sessionId, state: RpcSessionState, attached?: boolean }` | `sessionPath` = today's `--session` semantics (open-if-exists else create persisting there); `provider`/`modelId` applied only on create (resume restores the session's model); params form the immutable launch profile (D8). `retain_on_disconnect: true` (default false, host capability `retain_on_disconnect`) makes a dropped connection detach instead of closing the session. |
  * | `close_session`   | `sessionId`                                                                                    | `{}`                                            | Aborts active work and awaits teardown for the host grace window, then force-releases; the first closer's response is the LAST record tagged with that handle, while concurrent closes join and receive targeted success responses. |
- * | `list_sessions`   | -                                                                                               | `{ sessions: [{ sessionId, durableSessionId, sessionPath, cwd, name, status }] }` | Includes `opening`/`closing` entries with their status. |
+ * | `list_sessions`   | -                                                                                               | `{ sessions: [{ sessionId, durableSessionId, sessionPath, cwd, name, status, attachments }] }` | Includes `opening`/`closing` entries with their status; `attachments` is the live client count (`0` = retained, detached). |
  * | `get_steering_messages` / `get_follow_up_messages` / `clear_queue` | queue read or clear parameters | host-authoritative queue values | Interactive attach clients must not read bootstrap queues. |
  * | `abort_branch_summary` / `record_bash_result` / `set_label` | narrow mutation payloads | `{}` | Routes interactive runtime mutations to the owning host session. |
  * | every existing command | + `sessionId` (REQUIRED in multi mode)                                                      | unchanged                                       | Routed to that session. |
@@ -82,6 +82,7 @@ import { toJsonEvent } from "../json-event.ts";
 import { createRpcConnectionHandler, type RpcConnectionSink } from "./connection-handler.ts";
 import { parseClientCapabilities } from "./custom-capability.ts";
 import { attachJsonlLineReader, MAX_RPC_LINE_CHARACTERS, serializeJsonLine } from "./jsonl.ts";
+import { createRpcShutdown } from "./shutdown.ts";
 
 // Re-export types for consumers
 export type {
@@ -121,7 +122,6 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	const capabilities = parseClientCapabilities(envValue("RPC_CLIENT_CAPABILITIES"));
 	const handler = createRpcConnectionHandler(runtimeHost, sink, { capabilities });
 
-	let shuttingDown = false;
 	const signalCleanupHandlers: Array<() => void> = [];
 
 	const registerSignalHandlers = (): void => {
@@ -144,22 +144,20 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 	let detachInput = () => {};
 
-	async function shutdown(exitCode = 0, signal?: NodeJS.Signals): Promise<never> {
-		if (shuttingDown) {
-			process.exit(exitCode);
-		}
-		shuttingDown = true;
-		for (const cleanup of signalCleanupHandlers) {
-			cleanup();
-		}
-		await handler.dispose();
-		detachInput();
-		process.stdin.pause();
-		if (signal !== "SIGTERM") {
-			await flushRawStdout();
-		}
-		process.exit(exitCode);
-	}
+	const shutdown = createRpcShutdown(
+		async (signal) => {
+			for (const cleanup of signalCleanupHandlers) {
+				cleanup();
+			}
+			await handler.dispose();
+			detachInput();
+			process.stdin.pause();
+			if (signal !== "SIGTERM") {
+				await flushRawStdout();
+			}
+		},
+		(exitCode) => process.exit(exitCode),
+	);
 
 	const handleInputLine = async (line: string): Promise<void> => {
 		await handler.handleInputLine(line);

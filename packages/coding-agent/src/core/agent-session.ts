@@ -16,7 +16,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
-import { basename, dirname } from "node:path";
+import { dirname } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type {
 	Agent,
@@ -35,7 +35,6 @@ import type {
 import { ProviderRetryWatchdogAbortError, prepareAgentToolCall } from "@earendil-works/pi-agent-core";
 import {
 	contentText,
-	measureCursorHistorySerializedBytes,
 	providerNotConfiguredMessage,
 	SERVER_FALLBACK_ABORTED_DIAGNOSTIC,
 	type ThinkingSelection,
@@ -56,6 +55,7 @@ import type {
 import {
 	cleanupSessionResources,
 	cursorOverflowCompactionSettings,
+	describeProviderStallForUser,
 	isClassifierRefusal,
 	isContextOverflow,
 	isCursorPayloadResourceExhausted,
@@ -71,6 +71,7 @@ import {
 	shouldRetryOverflowWithoutCompact,
 	streamSimple,
 } from "@earendil-works/pi-ai/compat";
+import { getCursorContextLimit } from "@earendil-works/pi-ai/utils/cursor-context-limit";
 import { extract429RetryAfterMs, parseRetryAfterMsMarker } from "@earendil-works/pi-ai/utils/retry-hint";
 import { retryBackoffDelayMs } from "@earendil-works/pi-ai/utils/retry-profile/backoff";
 import { getAgentDir } from "../config.ts";
@@ -105,7 +106,10 @@ import {
 import { CompactionLifecycleCoordinator, type CompactionLifecycleState } from "./compaction/lifecycle.ts";
 import { isTurnStuckOnContextOverflow } from "./compaction/stuck-overflow.ts";
 import { isWarmSummaryAnchorValid } from "./compaction/warm-anchor.ts";
+import type { CompactionModelSelector } from "./compaction-settings-access.ts";
+import { admitCursorHistory, cursorAdmissionBudgetBytes } from "./cursor-history-admission.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
+import { resolveDiscoveredResourcePaths } from "./discovered-resource-scope.ts";
 import { type BuildDynamicSystemPromptOptions, buildDynamicSystemPrompt } from "./dynamic-prompt/index.ts";
 import {
 	AssistantEditError,
@@ -190,12 +194,7 @@ import {
 	MANUAL_CONTINUE_CUSTOM_TYPE,
 	MANUAL_CONTINUE_DIRECTIVE,
 } from "./manual-continue.ts";
-import {
-	type BashExecutionMessage,
-	type CustomMessage,
-	convertToLlm,
-	filterContextExcludedMessages,
-} from "./messages.ts";
+import { type BashExecutionMessage, type CustomMessage, filterContextExcludedMessages } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import { type AvailableModelsSource, getModelNarrowingPatterns, resolveModelScope } from "./model-resolver.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
@@ -230,22 +229,32 @@ import {
 import { generateSessionTitle, sessionTitleRetryPolicy, shouldSkipSessionTitle } from "./session-title-generator.ts";
 import { SessionWorkBarrier } from "./session-work-barrier.ts";
 import type { SettingsManager, SettingsSourceSelection } from "./settings-manager.ts";
+import {
+	formatSkillInvocationPrompt,
+	MAX_SKILL_EXPANSIONS_PER_PROMPT,
+	parseSkillInvocationTokens,
+	removeSkillInvocationTokens,
+	type SkillInvocationPromptSkill,
+	type SkillInvocationSyntax,
+	type SkillInvocationToken,
+} from "./skill-invocation.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import { getSupportedThinkingLevels, supportsMax, supportsXhigh } from "./thinking-levels.ts";
 import { resetTimings, time } from "./timings.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { composeFilesystemPolicies } from "./tools/filesystem-policy.ts";
-import { createAllToolDefinitions, temporarilyDisabledToolNames } from "./tools/index.ts";
+import { createAllToolDefinitions } from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
 
-/** Tools routed exclusively through eval while the registered eval tool is available. */
-const EVAL_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set(["bash", "powershell", "workflow", "monitor"]);
+/** Externally registered tools routed through eval in addition to declared eval exposure. */
+const EVAL_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set(["workflow", "monitor"]);
 
 /** Sample eval-cell call for an eval-only tool, using the argument name that tool actually takes. */
 function evalHelperCall(name: string): string {
 	if (name === "bash" || name === "powershell") return `tool.${name}({ command: "..." })`;
+	if (name === "grep") return `tool.grep({ pattern: "...", path: "..." })`;
 	if (name === "workflow") return `tool.${name}({ action: "..." })`;
 	if (name === "monitor") return `tool.monitor({ description: "...", command: "...", filter: "..." })`;
 	return `tool.${name}({ ... })`;
@@ -254,176 +263,26 @@ const TURN_RETRY_SUPPRESSION_PREFIX = "senpi:no-turn-retry:";
 const DEFERRED_RETRY_QUEUE_OWNERS = new WeakSet<object>();
 
 // ============================================================================
-// Skill Invocation Formatting and Parsing
+// Skill Invocation Formatting and Parsing (see ./skill-invocation.ts)
 // ============================================================================
 
-export interface SkillInvocationPromptSkill {
-	name: string;
-	filePath: string;
-	baseDir: string;
-	body: string;
-}
-
-/** Format the user-attributed payload for one or more explicit skill invocations. */
-export function formatSkillInvocationPrompt(
-	skills: readonly SkillInvocationPromptSkill[],
-	userRequest?: string,
-): string {
-	const skillBlocks = skills.map(
-		(skill) =>
-			`The user explicitly invoked the "${skill.name}" skill. Follow the instructions in <skill-instruction> as binding for this request, while respecting higher-priority instructions.\n\n<skill-instruction name="${skill.name}" location="${skill.filePath}">\nReferences are relative to ${skill.baseDir}.\n\n${skill.body}\n</skill-instruction>`,
-	);
-	const expandedSkills = skillBlocks.join("\n\n");
-	return userRequest && /\S/.test(userRequest)
-		? `${expandedSkills}\n\n<user-request>\n${userRequest}\n</user-request>`
-		: expandedSkills;
-}
-
-/** Parsed skill block from a user message */
-export interface ParsedSkillBlock {
-	name: string;
-	location: string;
-	content: string;
-	userMessage: string | undefined;
-}
-
-/**
- * Parse a skill block from message text.
- * Returns null if the text doesn't contain a skill block.
- */
-export function parseSkillBlock(text: string): ParsedSkillBlock | null {
-	const instructionPattern =
-		/^The user explicitly invoked the "([^"]+)" skill\. Follow the instructions in <skill-instruction> as binding for this request, while respecting higher-priority instructions\.\n\n<skill-instruction name="([^"]+)" location="([^"]+)">\n([\s\S]*?)\n<\/skill-instruction>/;
-	const instructionMatch = text.match(instructionPattern);
-	if (instructionMatch) {
-		if (instructionMatch[1] !== instructionMatch[2]) return null;
-		let remainder = text.slice(instructionMatch[0].length);
-		while (remainder.startsWith("\n\nThe user explicitly invoked the ")) {
-			const chainedMatch = remainder.slice(2).match(instructionPattern);
-			if (!chainedMatch || chainedMatch[1] !== chainedMatch[2]) return null;
-			remainder = remainder.slice(chainedMatch[0].length + 2);
-		}
-		const requestMatch = remainder.match(/^\n\n<user-request>\n([\s\S]*?)\n<\/user-request>$/);
-		if (remainder && !requestMatch) return null;
-		return {
-			name: instructionMatch[1],
-			location: instructionMatch[3],
-			content: instructionMatch[4],
-			userMessage: requestMatch?.[1].trim() || undefined,
-		};
-	}
-
-	const legacyMatch = text.match(
-		/^<skill name="([^"]+)" location="([^"]+)">\n([\s\S]*?)\n<\/skill>(?:\n\n([\s\S]+))?$/,
-	);
-	if (!legacyMatch) return null;
-	return {
-		name: legacyMatch[1],
-		location: legacyMatch[2],
-		content: legacyMatch[3],
-		userMessage: legacyMatch[4]?.trim() || undefined,
-	};
-}
-
-export type SkillInvocationSyntax = "dollar" | "slash";
+export {
+	formatSkillInvocationPrompt,
+	MAX_SKILL_EXPANSIONS_PER_PROMPT,
+	MAX_SKILL_INVOCATION_TOKENS_PER_PROMPT,
+	type ParsedSkillBlock,
+	parseSkillBlock,
+	parseSkillInvocationTokens,
+	type SkillInvocationPromptSkill,
+	type SkillInvocationSyntax,
+	type SkillInvocationToken,
+} from "./skill-invocation.ts";
 
 export interface CommandInvocation {
 	name: string;
 	source: "extension" | "prompt";
 	sourceInfo: SourceInfo;
 	syntax: "slash";
-}
-
-export interface SkillInvocationToken {
-	name: string;
-	syntax: SkillInvocationSyntax;
-	start: number;
-	end: number;
-	position: "inline" | "leading";
-}
-
-export const MAX_SKILL_INVOCATION_TOKENS_PER_PROMPT = 64;
-
-const LEADING_SKILL_INVOCATION_PATTERN = /^(?:\/skill:([a-zA-Z][a-zA-Z0-9:_-]*)|\$([a-zA-Z][a-zA-Z0-9:_-]*))(?=\s|$)/;
-const INLINE_DOLLAR_SKILL_INVOCATION_PATTERN = /(^|\s)\$skill:([a-zA-Z][a-zA-Z0-9:_-]*)(?=\s|$)/g;
-
-/**
- * Find explicit skill invocation tokens without treating ordinary inline dollar
- * prose (for example `$HOME`) as executable.
- *
- * Leading runs accept `/skill:name`, `$name`, and `$skill:name`. Outside the
- * leading run only the desktop's explicit `$skill:name` token is executable.
- */
-export function parseSkillInvocationTokens(text: string): SkillInvocationToken[] {
-	const tokens: SkillInvocationToken[] = [];
-	let cursor = 0;
-
-	while (cursor < text.length) {
-		while (cursor < text.length && /\s/.test(text[cursor]!)) cursor++;
-		const match = text.slice(cursor).match(LEADING_SKILL_INVOCATION_PATTERN);
-		if (!match) break;
-		const syntax: SkillInvocationSyntax = match[1] ? "slash" : "dollar";
-		const dollarName = match[2];
-		const name = match[1] ?? (dollarName?.startsWith("skill:") ? dollarName.slice("skill:".length) : dollarName);
-		if (!name) break;
-		tokens.push({
-			name,
-			syntax,
-			start: cursor,
-			end: cursor + match[0].length,
-			position: "leading",
-		});
-		if (tokens.length >= MAX_SKILL_INVOCATION_TOKENS_PER_PROMPT) return tokens;
-		cursor += match[0].length;
-	}
-
-	INLINE_DOLLAR_SKILL_INVOCATION_PATTERN.lastIndex = cursor;
-	for (const match of text.matchAll(INLINE_DOLLAR_SKILL_INVOCATION_PATTERN)) {
-		const start = (match.index ?? 0) + match[1].length;
-		tokens.push({
-			name: match[2],
-			syntax: "dollar",
-			start,
-			end: start + `$skill:${match[2]}`.length,
-			position: "inline",
-		});
-		if (tokens.length >= MAX_SKILL_INVOCATION_TOKENS_PER_PROMPT) break;
-	}
-
-	return tokens;
-}
-
-function stripLeadingInvocationSeparators(text: string): string {
-	let cursor = 0;
-	while (text[cursor] === " " || text[cursor] === "\t") cursor++;
-	while (text[cursor] === "\n" || (text[cursor] === "\r" && text[cursor + 1] === "\n")) {
-		cursor += text[cursor] === "\r" ? 2 : 1;
-		const lineStart = cursor;
-		while (text[cursor] === " " || text[cursor] === "\t") cursor++;
-		if (text[cursor] !== "\n" && !(text[cursor] === "\r" && text[cursor + 1] === "\n")) {
-			return text.slice(lineStart);
-		}
-	}
-	return text.slice(cursor);
-}
-
-function removeSkillInvocationTokens(text: string, tokens: readonly SkillInvocationToken[]): string {
-	let cursor = 0;
-	let result = "";
-	for (const token of tokens) {
-		result += text.slice(cursor, token.start);
-		if (token.position === "inline") result += `[skill: ${token.name}]`;
-		cursor = token.end;
-		if (
-			token.position === "inline" &&
-			(result.endsWith(" ") || result.endsWith("\t")) &&
-			(text[cursor] === " " || text[cursor] === "\t")
-		) {
-			cursor++;
-		}
-	}
-	result += text.slice(cursor);
-	return tokens.some((token) => token.position === "leading") ? stripLeadingInvocationSeparators(result) : result;
 }
 
 /** Session-specific events that extend the core AgentEvent */
@@ -858,6 +717,17 @@ export type ClearedQueue = {
 	readonly ordered: readonly QueuedInput[];
 };
 
+/** Options accepted by the queued-input entry points `steer()` and `followUp()`. */
+export interface QueuedInputOptions {
+	/**
+	 * Recovery-ordered enqueue position. A reconnecting client replays its pending
+	 * messages with their original order so the queue is rebuilt as the user typed it.
+	 */
+	enqueueOrder?: number;
+	/** Input provenance reported to `input` extension handlers; defaults to "interactive". */
+	source?: InputSource;
+}
+
 export interface PromptOptions {
 	/** Whether to dispatch extension commands and expand skill commands and prompt templates (default: true) */
 	expandPromptTemplates?: boolean;
@@ -942,124 +812,11 @@ function isSameOverflowSource(
 /** Thinking levels including native max (Opus 4.6 legacy / Opus 4.7 native). */
 const THINKING_LEVELS_WITH_MAX: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
-/** Caps explicit skill expansion so one prompt cannot consume unbounded context. */
-export const MAX_SKILL_EXPANSIONS_PER_PROMPT = 5;
-
-/** Cursor ingest rejects large verbatim tool payloads. The bound is UTF-8 bytes. */
-export const CURSOR_TOOL_RESULT_MAX_CHARS = 2000;
-export const CURSOR_TOOL_RESULT_MAX_BYTES = 50_000;
-const CURSOR_TRUNCATION_MARKER = "\n...[truncated]";
-
-export function truncateToolResultBodies(
-	messages: AgentMessage[] | undefined,
-	maxChars = CURSOR_TOOL_RESULT_MAX_CHARS,
-	maxBytes = CURSOR_TOOL_RESULT_MAX_BYTES,
-	convert = (candidate: AgentMessage[]) => convertToLlm(candidate),
-): { messages: AgentMessage[] | undefined; changed: boolean } {
-	if (!Array.isArray(messages) || messages.length === 0) return { messages, changed: false };
-	const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-	const markerChars = [...segmenter.segment(CURSOR_TRUNCATION_MARKER)].length;
-	const result = messages.slice();
-	let changed = false;
-
-	// Apply the per-result character cap first, independent of the aggregate wire cap.
-	for (let messageIndex = result.length - 1; messageIndex >= 0; messageIndex--) {
-		const message = result[messageIndex];
-		if (message.role !== "toolResult" || !Array.isArray(message.content)) continue;
-		let content = message.content;
-		for (let partIndex = content.length - 1; partIndex >= 0; partIndex--) {
-			const part = content[partIndex];
-			if (part.type === "image" && typeof part.data === "string") continue;
-			if (part.type !== "text" || typeof part.text !== "string") continue;
-			const graphemes = [...segmenter.segment(part.text)].map((item) => item.segment);
-			if (graphemes.length <= maxChars) continue;
-			const kept = graphemes.slice(0, Math.max(0, maxChars - markerChars)).join("");
-			const nextText = kept + CURSOR_TRUNCATION_MARKER;
-			content = content === message.content ? content.slice() : content;
-			content[partIndex] = { ...part, text: nextText };
-			result[messageIndex] = { ...message, content };
-			changed = true;
-		}
-	}
-
-	const measure = (candidate: AgentMessage[]): number => {
-		const converted = convert(candidate);
-		const activeUserMessageIndex = converted.at(-1)?.role === "user" ? converted.length - 1 : -1;
-		return measureCursorHistorySerializedBytes(converted, activeUserMessageIndex);
-	};
-	const fits = (candidate = result) => measure(candidate) <= maxBytes;
-	if (fits()) return { messages: changed ? result : messages, changed };
-
-	// Empty the oldest result bodies. Search the monotonic prefix of candidates
-	// rather than serializing once for every result (admission must stay bounded).
-	const emptyToolResult = (message: AgentMessage): AgentMessage => {
-		if (message.role !== "toolResult" || !Array.isArray(message.content)) return message;
-		const emptiedContent = message.content.map((part) =>
-			part.type === "text" ? { ...part, text: "" } : part.type === "image" ? { ...part, data: "" } : part,
-		);
-		const content = emptiedContent.filter((part, index) => {
-			if (index === 0) return true;
-			const previous = emptiedContent[index - 1];
-			const empty = part.type === "text" ? part.text === "" : part.type === "image" && part.data === "";
-			const previousEmpty =
-				previous.type === "text" ? previous.text === "" : previous.type === "image" && previous.data === "";
-			return !empty || !previousEmpty;
-		});
-		return { ...message, content };
-	};
-	const toolResultIndexes = result.flatMap((message, index) =>
-		message.role === "toolResult" && Array.isArray(message.content) ? [index] : [],
-	);
-	const withEmptyPrefix = (count: number): AgentMessage[] => {
-		const candidate = result.slice();
-		for (let i = 0; i < count; i++)
-			candidate[toolResultIndexes[i]] = emptyToolResult(candidate[toolResultIndexes[i]]);
-		return candidate;
-	};
-	let low = 0;
-	let high = toolResultIndexes.length;
-	while (low < high) {
-		const middle = Math.floor((low + high) / 2);
-		if (fits(withEmptyPrefix(middle + 1))) high = middle;
-		else low = middle + 1;
-	}
-	const emptyCount = Math.min(low + 1, toolResultIndexes.length);
-	if (emptyCount > 0) {
-		result.splice(0, result.length, ...withEmptyPrefix(emptyCount));
-		changed = true;
-	}
-	if (fits()) return { messages: changed ? result : messages, changed };
-
-	// If metadata alone exceeds the cap, discard the oldest complete turns. This
-	// search is also monotonic and avoids quadratic whole-history reserialization.
-	const turnRanges: Array<[number, number]> = [];
-	const isConvertedUser = (message: AgentMessage): boolean => convert([message])[0]?.role === "user";
-	for (let index = 0; index < result.length; index++) {
-		if (!isConvertedUser(result[index])) continue;
-		const nextUser = result.findIndex((message, nextIndex) => nextIndex > index && isConvertedUser(message));
-		turnRanges.push([index, nextUser < 0 ? result.length : nextUser]);
-	}
-	const withoutTurns = (count: number): AgentMessage[] => {
-		if (count === 0) return result;
-		const start = turnRanges[0]?.[0] ?? 0;
-		const end = turnRanges[count - 1]?.[1] ?? start;
-		return [...result.slice(0, start), ...result.slice(end)];
-	};
-	low = 0;
-	high = turnRanges.length;
-	while (low < high) {
-		const middle = Math.floor((low + high) / 2);
-		if (fits(withoutTurns(middle + 1))) high = middle;
-		else low = middle + 1;
-	}
-	const turnCount = Math.min(low + 1, turnRanges.length);
-	if (turnCount > 0) {
-		const next = withoutTurns(turnCount);
-		result.splice(0, result.length, ...next);
-		changed = true;
-	}
-	return { messages: changed ? result : messages, changed };
-}
+/**
+ * Cursor admission lives in its own module; the names stay exported here so
+ * existing importers keep resolving them.
+ */
+export { CURSOR_TOOL_RESULT_MAX_CHARS, truncateToolResultBodies } from "./cursor-history-admission.ts";
 
 // ============================================================================
 // AgentSession Class
@@ -1099,11 +856,14 @@ export class AgentSession {
 	private readonly _messageEndsAwaitingPersistence = new Set<AgentMessage>();
 	private _isAgentRunActive = false;
 	private _toolExecutionDepth = 0;
+	private readonly _toolContextDisposers = new Set<() => void>();
 	private _promptStartPending = false;
 	private _nextInputId = 0;
 	private _idleWaitPromise: Promise<void> | undefined;
 	private _resolveIdleWait: (() => void) | undefined;
 	private _settlementEpoch = 0;
+	/** Set by the idle release; every runtime read re-hydrates before handing the array out. */
+	private _runtimeMessagesTokenized = false;
 
 	/** Tracks pending steering messages for UI display. Removed when delivered. */
 	private _steeringMessages: string[] = [];
@@ -1221,7 +981,7 @@ export class AgentSession {
 	private _initialActiveToolNames?: string[];
 	private _defaultToolNames?: Set<string>;
 	private _evalOnlyToolNames?: ReadonlySet<string>;
-	/** Explicit config override; when supplied it wins over the fixed policy across reloads. */
+	/** Explicit config override; when supplied it wins over the fixed and declared policy across reloads. */
 	private readonly _evalOnlyToolNamesOverride?: ReadonlySet<string>;
 	/** Policy tools withheld from the model, retained so disarming can restore direct access. */
 	private readonly _withheldEvalOnlyToolNames = new Set<string>();
@@ -1510,6 +1270,21 @@ export class AgentSession {
 		});
 	}
 
+	/**
+	 * Let tool_search answer a query that names an eval-only or removed tool with that
+	 * tool's redirect hint. Idempotent: called at construction and again once the
+	 * extension runtime is bound, whichever creates the session-scoped service first.
+	 */
+	private _bindToolSearchRemovedHints(): void {
+		let service: ReturnType<typeof getToolSearchService>;
+		try {
+			service = getToolSearchService();
+		} catch {
+			return;
+		}
+		service.bindRemovedToolHints(() => this.agent.removedToolHints);
+	}
+
 	private _installAgentToolHooks(): void {
 		this.agent.resolveUnknownToolCall = (toolName) => {
 			let service: ReturnType<typeof getToolSearchService>;
@@ -1522,6 +1297,7 @@ export class AgentSession {
 			if (!catalogTool || !this._activateLazyTool(toolName)) return undefined;
 			return this.agent.state.tools.find((tool) => tool.name === toolName);
 		};
+		this._bindToolSearchRemovedHints();
 
 		this.agent.beforeToolCall = async ({ toolCall, args }) => {
 			this._toolExecutionDepth++;
@@ -1607,6 +1383,20 @@ export class AgentSession {
 		};
 	}
 
+	/**
+	 * Cursor states a model's real context ceiling on every conversation
+	 * checkpoint. Once observed, it replaces the catalog guess on the live model
+	 * so context usage, compaction thresholds and admission all size against the
+	 * window the server will actually enforce.
+	 */
+	private _applyObservedCursorContextWindow(model: Model<Api>): void {
+		const observed = getCursorContextLimit(model.id);
+		if (observed === undefined || observed <= 0 || observed === model.contextWindow) return;
+		const previous = model.contextWindow;
+		model.contextWindow = observed;
+		this._sessionLogger.info("cursor_context_window_observed", { modelId: model.id, previous, observed });
+	}
+
 	private _installAgentNextTurnRefresh(): void {
 		const previousPrepareNextTurnWithContext =
 			this.agent.prepareNextTurnWithContext ??
@@ -1615,23 +1405,43 @@ export class AgentSession {
 				: undefined);
 		const previousTransformContext = this.agent.transformContext;
 		this.agent.transformContext = async (messages, signal) => {
+			// The idle path tokenizes agent.state.messages in place; every provider
+			// request re-hydrates here so tokens can never reach a model.
+			this.sessionManager.getResidentStore().materializeInPlace(messages);
 			const transformed = previousTransformContext ? await previousTransformContext(messages, signal) : messages;
-			if (this.model?.provider === "cursor" || this.model?.provider === "cursor-cli-oauth") {
-				return (
-					(
-						await truncateToolResultBodies(
-							transformed,
-							CURSOR_TOOL_RESULT_MAX_CHARS,
-							CURSOR_TOOL_RESULT_MAX_BYTES,
-							(candidate) => this.agent.convertToLlm(candidate) as Message[],
-						)
-					).messages ?? transformed
-				);
+			const model = this.model;
+			if (model?.provider !== "cursor" && model?.provider !== "cursor-cli-oauth") return transformed;
+			this._applyObservedCursorContextWindow(model);
+			const budgetBytes = cursorAdmissionBudgetBytes(model.contextWindow);
+			const admission = admitCursorHistory({
+				messages: transformed,
+				budgetBytes,
+				convert: (candidate) => this.agent.convertToLlm(candidate) as Message[],
+			});
+			if (admission.blankedToolResults > 0) {
+				this._sessionLogger.info("cursor_admission_truncated", {
+					blankedToolResults: admission.blankedToolResults,
+					bytesBefore: admission.bytesBefore,
+					bytesAfter: admission.bytesAfter,
+					budgetBytes,
+				});
 			}
-			return transformed;
+			if (admission.overBudget) {
+				// The request is still admitted: Cursor answers an oversized history
+				// with a 0-token resource_exhausted, which the session layer compacts.
+				this._sessionLogger.warn("cursor_admission_over_budget", {
+					bytes: admission.bytesAfter,
+					budgetBytes,
+				});
+			}
+			return admission.messages ?? transformed;
 		};
 
 		this.agent.prepareNextTurnWithContext = async (turn, signal) => {
+			// A settled turn leaves tokens in agent.state.messages (idle release); make
+			// them readable again before any consumer (compaction admission, context
+			// refresh, admission estimation) reads them this turn.
+			this._runtimeMessages();
 			// Enforce compaction only when this prepare precedes an actual provider
 			// admission: a tool continuation or queued steer/follow-up messages. A
 			// completed turn with no continuation keeps pre-PR timing, while the
@@ -1850,11 +1660,35 @@ export class AgentSession {
 	private _estimateCompactionLogTokens(source: "active" | "persisted"): number | undefined {
 		try {
 			const messages =
-				source === "active" ? this.agent.state.messages : this.sessionManager.buildSessionContext().messages;
+				source === "active" ? this._runtimeMessages() : this.sessionManager.buildSessionContext().messages;
 			return estimateMessagesTokens(filterContextExcludedMessages(messages));
 		} catch {
 			return undefined;
 		}
+	}
+
+	private _createToolContext(signal: AbortSignal | undefined) {
+		const context = this._extensionRunner.createContext();
+		const controller = new AbortController();
+		const cancellation = signal ?? context.signal;
+		const unsubscribe = this.subscribe((event) => {
+			if (event.type === "queue_update" && event.steering.length > 0) controller.abort();
+		});
+		const dispose = () => {
+			unsubscribe();
+			cancellation?.removeEventListener("abort", dispose);
+			this._toolContextDisposers.delete(dispose);
+		};
+		this._toolContextDisposers.add(dispose);
+		cancellation?.addEventListener("abort", dispose, { once: true });
+		if (cancellation?.aborted) {
+			dispose();
+		} else if (this._steeringMessages.length > 0) {
+			// Subscribe before checking, without yielding: queued steering cannot fall in a gap.
+			controller.abort();
+		}
+		Object.defineProperty(context, "steeringSignal", { value: controller.signal, enumerable: true });
+		return { context, dispose };
 	}
 
 	private _emitQueueUpdate(): void {
@@ -1874,9 +1708,23 @@ export class AgentSession {
 		this._releaseBlockedPostCompactionAdmissionIfReduced();
 	}
 
+	/**
+	 * `agent.state.messages` with resident tokens hydrated, same array identity.
+	 * The idle release tokenizes the runtime messages in place to let the resident
+	 * store drop its hydrated copies; every reader that can run between two turns
+	 * goes through here so a sentinel never reaches a consumer.
+	 */
+	private _runtimeMessages(): AgentMessage[] {
+		if (this._runtimeMessagesTokenized) {
+			this._runtimeMessagesTokenized = false;
+			this.sessionManager.getResidentStore().materializeInPlace(this.agent.state.messages);
+		}
+		return this.agent.state.messages;
+	}
+
 	/** Byte-derived size of the context an admission decision would carry. */
 	private _blockedAdmissionContentTokens(): number {
-		return estimateMessagesTokens(filterContextExcludedMessages(this.agent.state.messages));
+		return estimateMessagesTokens(filterContextExcludedMessages(this._runtimeMessages()));
 	}
 
 	/** A compaction that genuinely reduced the context clears the blocked state. */
@@ -2017,6 +1865,20 @@ export class AgentSession {
 		}
 		if (settlementEpoch !== this._settlementEpoch) return;
 		if (this._isAgentRunActive || this._sessionWorkBarrier.hasActiveWork) return;
+		// Releasing frees memory only for strings the store already spilled to its blob
+		// backing: a resident string is shared with the store, so tokenizing it hands
+		// back nothing while costing every settled-time reader a re-materialization.
+		if ((this.sessionManager.getResidentStoreStats().evictedCount ?? 0) > 0) {
+			// Settling idle: release the memoized materialized session views. Materialized
+			// entries pin the full persisted strings, so keeping the views between turns
+			// holds the whole session text in resident memory while nothing runs.
+			this.sessionManager.dropMaterializedCaches();
+			// agent.state.messages holds the runtime copies of the same large strings the
+			// views pinned. Tokenize them in place while idle; the next read re-materializes
+			// them through _runtimeMessages(), and the next turn through the hooks above.
+			this.sessionManager.getResidentStore().externalizeInPlace(this.agent.state.messages);
+			this._runtimeMessagesTokenized = true;
+		}
 		this._emit({ type: "agent_idle" });
 	}
 
@@ -2212,7 +2074,7 @@ export class AgentSession {
 	 * and that small figure must not hide a transcript already past the window.
 	 */
 	private _resolveThresholdContextTokens(directContextTokens: number): number {
-		const messages = filterContextExcludedMessages(this.agent.state.messages);
+		const messages = filterContextExcludedMessages(this._runtimeMessages());
 		return resolveThresholdContextTokens(directContextTokens, estimateMessagesTokens(messages));
 	}
 
@@ -2261,7 +2123,7 @@ export class AgentSession {
 		if (message.stopReason !== "error" && directContextTokens !== 0) {
 			contextTokens = this._resolveThresholdContextTokens(directContextTokens);
 		} else {
-			const messages = filterContextExcludedMessages(this.agent.state.messages);
+			const messages = filterContextExcludedMessages(this._runtimeMessages());
 			const estimate = estimateContextTokens(messages);
 			if (estimate.lastUsageIndex === null) {
 				if (!this._isRequiredCompactionError(message)) return undefined;
@@ -2296,7 +2158,7 @@ export class AgentSession {
 		const model = this.model;
 		if (!model) return false;
 		const settings = this._getCompactionSettings();
-		const contextTokens = estimateMessagesTokens(filterContextExcludedMessages(this.agent.state.messages));
+		const contextTokens = estimateMessagesTokens(filterContextExcludedMessages(this._runtimeMessages()));
 		return shouldCompact(contextTokens, model.contextWindow, settings);
 	}
 
@@ -3002,6 +2864,7 @@ export class AgentSession {
 	 * Call this when completely done with the session.
 	 */
 	dispose(): void {
+		for (const dispose of this._toolContextDisposers) dispose();
 		try {
 			this._probeBackScheduler.cancel("dispose");
 			this.abortRetry();
@@ -3024,6 +2887,9 @@ export class AgentSession {
 		this._unsubscribeWakeSources = undefined;
 		this._eventListeners = [];
 		cleanupSessionResources(this.sessionId);
+		// Nothing reads or writes this manager once its session is gone: it releases
+		// its writer grant and its disposable blob directory here.
+		this.sessionManager.dispose();
 	}
 
 	/** Live in-session activity signals; see `session-activity.ts` for the contract. */
@@ -3313,17 +3179,29 @@ export class AgentSession {
 	 */
 	private _activateLazyTool(toolName: string): boolean {
 		const definition = this._toolDefinitions.get(toolName)?.definition;
-		if (!definition || !normalizeToolExposure(definition).allowLazyActivation) return false;
-		return this._lazyToolActivators.some((activate) => activate(toolName));
+		if (!definition) return false;
+		const exposure = normalizeToolExposure(definition);
+		if (!exposure.allowLazyActivation) return false;
+		if (this._lazyToolActivators.some((activate) => activate(toolName))) return true;
+		// Exposure metadata owns the by-name path: when no catalog service is loaded (or it
+		// declines), the session promotes a search-exposed tool directly so a deferred tool
+		// still activates. Eval-exposed tools are reached through the eval cell, never promoted.
+		if (exposure.exposure === "search" && !this.getActiveToolNames().includes(toolName)) {
+			this.setActiveToolsByName([...this.getActiveToolNames(), toolName]);
+		}
+		return this.getActiveToolNames().includes(toolName);
 	}
 
 	private _isEvalOnlyPolicyArmed(): boolean {
 		return this._evalOnlyToolNames !== undefined && this._toolRegistry.has("eval");
 	}
 
-	/** Resolve the fixed eval-only policy, unless an SDK embedder supplied an override. */
+	/** Resolve fixed and declared eval-only tools, unless an SDK embedder supplied an override. */
 	private _resolveEvalOnlyToolNames(): ReadonlySet<string> {
-		return this._evalOnlyToolNamesOverride ?? EVAL_ONLY_TOOL_NAMES;
+		const declaredEvalNames = [...this._toolDefinitions.values()]
+			.filter(({ definition }) => normalizeToolExposure(definition).exposure === "eval")
+			.map(({ definition }) => definition.name);
+		return this._evalOnlyToolNamesOverride ?? new Set([...EVAL_ONLY_TOOL_NAMES, ...declaredEvalNames]);
 	}
 
 	/**
@@ -3447,7 +3325,7 @@ export class AgentSession {
 
 	/** All messages including custom types like BashExecutionMessage */
 	get messages(): AgentMessage[] {
-		return this.agent.state.messages;
+		return this._runtimeMessages();
 	}
 
 	/** Current steering mode */
@@ -3624,16 +3502,61 @@ export class AgentSession {
 				`The workflow tool runs ONLY inside eval cells via ${evalHelperCall("workflow")}; hooks and permissions still apply.`,
 			);
 		}
-		// SDK embedders can arm names outside the built-in groups; they still need eval guidance.
+		// Declared tools and SDK overrides outside the built-in groups still need eval guidance.
 		const otherHelpers = [...registered]
-			.filter((name) => name !== "bash" && name !== "powershell" && name !== "workflow")
+			.filter((name) => name !== "bash" && name !== "powershell" && name !== "workflow" && name !== "grep")
 			.map(evalHelperCall);
 		if (otherHelpers.length > 0) {
 			sentences.push(
 				`These tools run ONLY inside eval cells via ${otherHelpers.join(" or ")}; hooks and permissions still apply.`,
 			);
 		}
+		if (registered.has("grep")) {
+			sentences.push(
+				`Text search runs ONLY inside eval cells via ${evalHelperCall("grep")}; it returns structured matches, respects .gitignore, and applies hooks and permissions - prefer it over rg/grep in tool.bash.`,
+			);
+		}
 		return sentences.length > 0 ? `${prompt}\n\n${sentences.join("\n\n")}` : prompt;
+	}
+
+	/**
+	 * Run `input` extension handlers for queued (steer / follow-up) input.
+	 *
+	 * Queued input reaches the model exactly like a prompt does, so it passes the same
+	 * extension surface: a handler may consume it or rewrite it. The input keeps the
+	 * session-scoped `inputId` identity, so the `input_disposition` event a handler
+	 * observes correlates with the input it saw.
+	 *
+	 * @returns the (possibly transformed) input, or `undefined` when a handler consumed it.
+	 */
+	private async _runInputHandlers(
+		text: string,
+		images: ImageContent[] | undefined,
+		source: InputSource,
+		streamingBehavior?: "steer" | "followUp",
+	): Promise<{ text: string; images: ImageContent[] | undefined; inputId?: string } | undefined> {
+		if (!this._extensionRunner.hasHandlers("input")) {
+			return { text, images };
+		}
+
+		const inputId = `${this.sessionManager.getSessionId()}:${++this._nextInputId}`;
+		const inputResult = await this._extensionRunner.emitInput(text, images, source, streamingBehavior, inputId);
+		if (inputResult.action === "handled") {
+			await this._emitInputDisposition(inputId, "handled");
+			return undefined;
+		}
+		if (inputResult.action === "transform") {
+			return { text: inputResult.text, images: inputResult.images ?? images, inputId };
+		}
+		return { text, images, inputId };
+	}
+
+	private async _emitInputDisposition(
+		inputId: string | undefined,
+		disposition: "handled" | "queued" | "started" | "rejected",
+	): Promise<void> {
+		if (inputId === undefined) return;
+		await this._extensionRunner.emit({ type: "input_disposition", inputId, disposition });
 	}
 
 	/**
@@ -4129,14 +4052,16 @@ export class AgentSession {
 
 	/**
 	 * Expand explicit skill invocations to their full content.
-	 * Leading runs accept slash and dollar syntax; inline expansion is limited to
-	 * the desktop's explicit `$skill:name` token so ordinary dollar prose stays literal.
+	 * Leading runs accept slash and dollar syntax; inline `$name` expands only when
+	 * it names a loaded skill, so ordinary dollar prose such as `$HOME` stays literal.
 	 */
 	private _expandSkillCommand(text: string): string {
-		const invocationTokens = parseSkillInvocationTokens(text);
+		const skills = this.resourceLoader.getSkills().skills;
+		const invocationTokens = parseSkillInvocationTokens(text, {
+			knownSkillNames: new Set(skills.map((skill) => skill.name)),
+		});
 		if (invocationTokens.length === 0) return text;
 
-		const skills = this.resourceLoader.getSkills().skills;
 		const expandedSkillNames = new Set<string>();
 		const skillBlocks: SkillInvocationPromptSkill[] = [];
 		const invocationMetadata: Array<{
@@ -4204,25 +4129,39 @@ export class AgentSession {
 	}
 
 	/**
-	 * Queue a steering message while the agent is running.
-	 * Delivered after the current assistant turn finishes executing its tool calls,
-	 * before the next LLM call.
-	 * Expands skill commands and prompt templates. Errors on extension commands.
-	 * @param images Optional image attachments to include with the message
-	 * @throws Error if text is an extension command
+	 * Shared queueing path for `steer()` and `followUp()`: extension-command guard,
+	 * `input` handlers, skill/template expansion, then the recovery-ordered enqueue.
 	 */
-	async steer(text: string, images?: ImageContent[], recovery?: { enqueueOrder?: number }): Promise<void> {
+	private async _queueUserInput(
+		text: string,
+		images: ImageContent[] | undefined,
+		behavior: "steer" | "followUp",
+		options?: QueuedInputOptions,
+	): Promise<void> {
 		// Check for extension commands (cannot be queued)
 		if (text.startsWith("/")) {
 			this._throwIfExtensionCommand(text);
 		}
 
+		const processedInput = await this._runInputHandlers(
+			text,
+			images,
+			options?.source ?? "interactive",
+			this.isStreaming ? behavior : undefined,
+		);
+		if (!processedInput) return;
+
 		// Expand skill commands and prompt templates
-		let expandedText = this._expandSkillCommand(text);
+		let expandedText = this._expandSkillCommand(processedInput.text);
 		const templateExpansion = expandPromptTemplateWithMetadata(expandedText, [...this.promptTemplates]);
 		expandedText = templateExpansion.text;
 
-		await this._queueSteer(expandedText, images, recovery?.enqueueOrder);
+		if (behavior === "steer") {
+			await this._queueSteer(expandedText, processedInput.images, options?.enqueueOrder);
+		} else {
+			await this._queueFollowUp(expandedText, processedInput.images, options?.enqueueOrder);
+		}
+		await this._emitInputDisposition(processedInput.inputId, "queued");
 		if (templateExpansion.template) {
 			this._emit({
 				type: "command_invocation",
@@ -4237,35 +4176,30 @@ export class AgentSession {
 	}
 
 	/**
-	 * Queue a follow-up message to be processed after the agent finishes.
-	 * Delivered only when agent has no more tool calls or steering messages.
-	 * Expands skill commands and prompt templates. Errors on extension commands.
+	 * Queue a steering message while the agent is running.
+	 * Delivered after the current assistant turn finishes executing its tool calls,
+	 * before the next LLM call.
+	 * Runs `input` extension handlers, then expands skill commands and prompt templates.
+	 * Errors on extension commands.
 	 * @param images Optional image attachments to include with the message
+	 * @param options Recovery enqueue order and input source; source defaults to interactive
 	 * @throws Error if text is an extension command
 	 */
-	async followUp(text: string, images?: ImageContent[], recovery?: { enqueueOrder?: number }): Promise<void> {
-		// Check for extension commands (cannot be queued)
-		if (text.startsWith("/")) {
-			this._throwIfExtensionCommand(text);
-		}
+	async steer(text: string, images?: ImageContent[], options?: QueuedInputOptions): Promise<void> {
+		await this._queueUserInput(text, images, "steer", options);
+	}
 
-		// Expand skill commands and prompt templates
-		let expandedText = this._expandSkillCommand(text);
-		const templateExpansion = expandPromptTemplateWithMetadata(expandedText, [...this.promptTemplates]);
-		expandedText = templateExpansion.text;
-
-		await this._queueFollowUp(expandedText, images, recovery?.enqueueOrder);
-		if (templateExpansion.template) {
-			this._emit({
-				type: "command_invocation",
-				command: {
-					name: templateExpansion.template.name,
-					source: "prompt",
-					sourceInfo: templateExpansion.template.sourceInfo,
-					syntax: "slash",
-				},
-			});
-		}
+	/**
+	 * Queue a follow-up message to be processed after the agent finishes.
+	 * Delivered only when agent has no more tool calls or steering messages.
+	 * Runs `input` extension handlers, then expands skill commands and prompt templates.
+	 * Errors on extension commands.
+	 * @param images Optional image attachments to include with the message
+	 * @param options Recovery enqueue order and input source; source defaults to interactive
+	 * @throws Error if text is an extension command
+	 */
+	async followUp(text: string, images?: ImageContent[], options?: QueuedInputOptions): Promise<void> {
+		await this._queueUserInput(text, images, "followUp", options);
 	}
 
 	private _startSessionTitleGeneration(firstPrompt: string): void {
@@ -5643,7 +5577,7 @@ export class AgentSession {
 		// (#7921 case 6).
 		this._releaseBlockedPostCompactionAdmission();
 		const pathEntries = this.sessionManager.getBranch();
-		const settings = cursorOverflowCompactionSettings(this._getCompactionSettings(), model.provider, "manual");
+		const settings = cursorOverflowCompactionSettings(this._getCompactionSettings(model), model.provider, "manual");
 		if (!prepareCompaction(pathEntries, settings)) {
 			const requestId = randomUUID();
 			const lastEntry = pathEntries[pathEntries.length - 1];
@@ -6184,7 +6118,11 @@ export class AgentSession {
 		// Size the same retained context that will be admitted to Cursor. Persisted JSONL
 		// remains verbatim, but the in-memory request representation is bounded first.
 		if (model.provider === "cursor" || model.provider === "cursor-cli-oauth") {
-			simulatedMessages = truncateToolResultBodies(simulatedMessages).messages ?? simulatedMessages;
+			simulatedMessages =
+				admitCursorHistory({
+					messages: simulatedMessages,
+					budgetBytes: cursorAdmissionBudgetBytes(model.contextWindow),
+				}).messages ?? simulatedMessages;
 		}
 		const contextTokens = estimateMessagesTokens(filterContextExcludedMessages(simulatedMessages));
 		const settings = this._getCompactionSettings();
@@ -6923,6 +6861,9 @@ export class AgentSession {
 	 */
 	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<boolean> {
 		if (this._isCompactionDelegated()) return false;
+		// Model identity is captured before the auth await below: a model switch during
+		// that await must not change the token budgets this compaction was admitted with.
+		const model = this.model;
 		const finishCompactionWork = this._sessionWorkBarrier.begin();
 		const agentMessagesAtStart = this.agent.state.messages.slice();
 		const autoCompactionController = new AbortController();
@@ -6969,7 +6910,7 @@ export class AgentSession {
 
 			const preparation = prepareCompaction(
 				this.sessionManager.getBranch(),
-				cursorOverflowCompactionSettings(this._getCompactionSettings(), this.model?.provider, reason),
+				cursorOverflowCompactionSettings(this._getCompactionSettings(model), model?.provider, reason),
 				reason === "overflow",
 			);
 			if (!preparation) {
@@ -7065,8 +7006,16 @@ export class AgentSession {
 		this._emitSessionSettingsChanged();
 	}
 
-	private _getCompactionSettings(): ReturnType<SettingsManager["getCompactionSettings"]> {
-		const settings = this.settingsManager.getCompactionSettings();
+	/**
+	 * Compaction settings for a model, defaulting to the session model so per-model
+	 * token budgets (`compaction.modelOverrides`) apply to every compaction read here.
+	 * Callers that captured a model before an await pass it explicitly, so a model
+	 * switch during that await cannot change the budget the operation started with.
+	 */
+	private _getCompactionSettings(
+		forModel: CompactionModelSelector | undefined = this.model,
+	): ReturnType<SettingsManager["getCompactionSettings"]> {
+		const settings = this.settingsManager.getCompactionSettings(forModel);
 		if (this._autoCompactionSessionOverride === undefined) return settings;
 		return { ...settings, enabled: this._autoCompactionSessionOverride };
 	}
@@ -7137,11 +7086,12 @@ export class AgentSession {
 			return;
 		}
 
+		const extensions = this._resourceLoader.getExtensions().extensions;
 		const extensionPaths: ResourceExtensionPaths = {
-			skillPaths: this.buildExtensionResourcePaths(skillPaths),
-			promptPaths: this.buildExtensionResourcePaths(promptPaths),
-			themePaths: this.buildExtensionResourcePaths(themePaths),
-			hookPaths: this.buildExtensionResourcePaths(hookPaths),
+			skillPaths: resolveDiscoveredResourcePaths(skillPaths, extensions),
+			promptPaths: resolveDiscoveredResourcePaths(promptPaths, extensions),
+			themePaths: resolveDiscoveredResourcePaths(themePaths, extensions),
+			hookPaths: resolveDiscoveredResourcePaths(hookPaths, extensions),
 		};
 
 		this._resourceLoader.extendResources(extensionPaths);
@@ -7149,39 +7099,6 @@ export class AgentSession {
 			this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
 			this.agent.state.systemPrompt = this._baseSystemPrompt;
 		}
-	}
-
-	private buildExtensionResourcePaths(entries: Array<{ path: string; extensionPath: string }>): Array<{
-		path: string;
-		metadata: {
-			source: string;
-			scope: "temporary";
-			origin: "top-level";
-			baseDir?: string;
-		};
-	}> {
-		return entries.map((entry) => {
-			const source = this.getExtensionSourceLabel(entry.extensionPath);
-			const baseDir = entry.extensionPath.startsWith("<") ? undefined : dirname(entry.extensionPath);
-			return {
-				path: entry.path,
-				metadata: {
-					source,
-					scope: "temporary",
-					origin: "top-level",
-					baseDir,
-				},
-			};
-		});
-	}
-
-	private getExtensionSourceLabel(extensionPath: string): string {
-		if (extensionPath.startsWith("<")) {
-			return `extension:${extensionPath.replace(/[<>]/g, "")}`;
-		}
-		const base = basename(extensionPath);
-		const name = base.replace(/\.(ts|js)$/, "");
-		return `extension:${name}`;
 	}
 
 	private _applyExtensionBindings(runner: ExtensionRunner): void {
@@ -7500,6 +7417,7 @@ export class AgentSession {
 				},
 			},
 		);
+		this._bindToolSearchRemovedHints();
 	}
 
 	/** Fallback-chain configuration warnings calculated when this session started. */
@@ -7554,12 +7472,9 @@ export class AgentSession {
 				}),
 			})),
 		].filter((tool) => isAllowedTool(tool.definition.name));
-		// Withheld tools stay in _baseToolDefinitions (and therefore in _toolRegistry, which
-		// getRegisteredTool serves to the Cursor exec bridge) but are dropped from the model-facing
-		// definitions so they never reach the prompt. See temporarilyDisabledToolNames.
 		const definitionRegistry = new Map<string, ToolDefinitionEntry>(
 			Array.from(this._baseToolDefinitions.entries())
-				.filter(([name]) => isAllowedTool(name) && !temporarilyDisabledToolNames.has(name))
+				.filter(([name]) => isAllowedTool(name))
 				.map(([name, definition]) => [
 					name,
 					{
@@ -7594,7 +7509,8 @@ export class AgentSession {
 				.filter((entry): entry is readonly [string, string[]] => entry !== undefined),
 		);
 		const runner = this._extensionRunner;
-		const wrappedExtensionTools = wrapRegisteredTools(allCustomTools, runner);
+		const createToolContext = (signal: AbortSignal | undefined) => this._createToolContext(signal);
+		const wrappedExtensionTools = wrapRegisteredTools(allCustomTools, runner, createToolContext);
 		const wrappedBuiltInTools = wrapRegisteredTools(
 			Array.from(this._baseToolDefinitions.values())
 				.filter((definition) => isAllowedTool(definition.name))
@@ -7603,6 +7519,7 @@ export class AgentSession {
 					sourceInfo: createSyntheticSourceInfo(`<builtin:${definition.name}>`, { source: "builtin" }),
 				})),
 			runner,
+			createToolContext,
 		);
 
 		const toolRegistry = new Map(wrappedBuiltInTools.map((tool) => [tool.name, tool]));
@@ -7610,23 +7527,21 @@ export class AgentSession {
 			toolRegistry.set(tool.name, tool);
 		}
 		this._toolRegistry = toolRegistry;
+		this._evalOnlyToolNames = this._resolveEvalOnlyToolNames();
 		this._publishEvalOnlyToolHints();
 		const isDirectlyExposed = (name: string): boolean => {
 			const entry = this._toolDefinitions.get(name);
-			return entry !== undefined && normalizeToolExposure(entry.definition).exposure === "direct";
+			if (!entry) return false;
+			const exposure = normalizeToolExposure(entry.definition).exposure;
+			return exposure === "direct" || exposure === "eval";
 		};
 
-		// A withheld tool is dropped from the DEFAULT selection only. An explicit activeToolNames
-		// request names the tool deliberately, and callers that do so (tests, SDK embedders,
-		// filesystem-policy wiring) still expect it to activate.
-		const hasExplicitActiveToolNames = options?.activeToolNames !== undefined;
 		const nextActiveToolNames = (
 			options?.activeToolNames
 				? [...options.activeToolNames]
 				: [...(this._requestedActiveToolNames ?? previousActiveToolNames)]
 		).filter((name) => {
 			if (!isAllowedTool(name)) return false;
-			if (!hasExplicitActiveToolNames && temporarilyDisabledToolNames.has(name)) return false;
 			const previousRegistrationIds = options?.previousActiveToolRegistrationIds;
 			if (!previousRegistrationIds) return true;
 			const current = this._toolDefinitions.get(name);
@@ -7713,7 +7628,7 @@ export class AgentSession {
 
 		const defaultActiveToolNames = this._baseToolsOverride
 			? Object.keys(this._baseToolsOverride)
-			: ["read", "bash", "edit", "write"];
+			: ["read", "bash", "edit", "write", "grep"];
 		const baseActiveToolNames = options.activeToolNames ?? defaultActiveToolNames;
 		this._refreshToolRegistry({
 			activeToolNames: baseActiveToolNames,
@@ -7751,7 +7666,7 @@ export class AgentSession {
 		// Capture the unfiltered request BEFORE the rebuild reassigns it, so a policy that
 		// disarms during this reload can still restore its withheld eval-only tools.
 		const requestedActiveToolNamesBeforeRebuild = [...(this._requestedActiveToolNames ?? this.getActiveToolNames())];
-		// Re-resolve the fixed policy (or SDK override) so reload cannot regress it.
+		// Re-resolve fixed and declared policy (or SDK override); the registry rebuild refreshes declarations again.
 		this._evalOnlyToolNames = this._resolveEvalOnlyToolNames();
 		this.syncQueueModesFromSettings();
 		resetApiProviders();
@@ -7989,6 +7904,24 @@ export class AgentSession {
 				this._emit({ type: "summarization_retry_finished" });
 			},
 		};
+	}
+
+	/**
+	 * User-facing text for a turn that is really over. A provider-stream stall
+	 * carries the watchdog's own wording (`Provider stream start timed out after
+	 * 180000ms ...`), which the retry classifier needs on the message but which
+	 * explains nothing to the person reading the transcript and names no next
+	 * step (senpi#1740). Anything that is not a stall keeps its error verbatim.
+	 */
+	private _terminalFailureText(message: AssistantMessage, attempts: number): string | undefined {
+		const model = this.model ? `${this.model.provider}/${this.model.id}` : undefined;
+		return (
+			describeProviderStallForUser(message.errorMessage, {
+				attempts,
+				model,
+				recovery: this._retryFallback.hasConfiguredChain() ? "chain-exhausted" : "no-fallback-configured",
+			}) ?? message.errorMessage
+		);
 	}
 
 	/**
@@ -8381,7 +8314,7 @@ export class AgentSession {
 						type: "auto_retry_end",
 						success: false,
 						attempt: this._retryAttempt - 1,
-						finalError: message.errorMessage,
+						finalError: this._terminalFailureText(message, this._retryAttempt - 1),
 					});
 					this._retryAttempt = 0;
 					this._resetHintTierState();
@@ -8445,12 +8378,33 @@ export class AgentSession {
 			this._retryAttempt,
 			this._retryRandom(),
 		);
-		const delayMs =
+		const plannedDelayMs =
 			switchedFallback || sameModelNativeRecovery
 				? 0
 				: is429TierRouted
 					? (hintTierDelayMs ?? providerDelayMs ?? localExponentialMs)
 					: (nonTierProviderDelayMs ?? localExponentialMs);
+		// `retry.maxAgentDelayMs` is a hard ceiling on ONE agent-level wait, applied after
+		// the profile/hint/jitter planning above (the planner still owns the schedule).
+		// It bounds the worst case a provider hint or a long backoff can impose on a turn.
+		// A profile's override-mode turn hint ceiling owns this clamp instead of the
+		// settings default (fork semantics: the ceiling belongs to the profile, and an
+		// explicit profile ceiling must not be clamped by the global default): `null`
+		// (kimi-code) is explicitly uncapped, so a wait the over-ceiling gate above
+		// admitted passes through verbatim; a number is the profile's own cap. The
+		// settings cap applies only when the profile declares no ceiling of its own
+		// (the tiered senpi-default).
+		const profileTurnCeilingMs =
+			retryProfile.turn.serverHint.mode === "override" ? retryProfile.turn.serverHint.ceiling.maxDelayMs : undefined;
+		// An explicitly user-configured retry.maxAgentDelayMs always wins; a profile's own
+		// ceiling is the next authority; the 60s default is the last resort.
+		const userConfiguredCeilingMs = this.settingsManager.isRetryMaxAgentDelayMsConfigured?.() ?? false;
+		const agentCeilingMs = userConfiguredCeilingMs
+			? settings.maxAgentDelayMs
+			: profileTurnCeilingMs === undefined
+				? settings.maxAgentDelayMs
+				: profileTurnCeilingMs;
+		const delayMs = Math.min(plannedDelayMs, agentCeilingMs ?? Number.MAX_SAFE_INTEGER);
 		// Prepare before auto_retry_start so an immediate Esc can cancel the retry sleep.
 		this._retryAbortController = new AbortController();
 
@@ -8803,6 +8757,11 @@ export class AgentSession {
 	): Promise<AssistantEditResult> {
 		if (this.isStreaming) {
 			throw new SessionStreamingError();
+		}
+		if (this.isCompacting) {
+			throw new Error(
+				"Wait for the current compaction or tree navigation to finish before navigating the session tree.",
+			);
 		}
 
 		const oldLeafId = this.sessionManager.getLeafId();

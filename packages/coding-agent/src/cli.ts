@@ -10,6 +10,10 @@ import { APP_NAME, DISPLAY_VERSION, getPackageDir } from "./config.ts";
 import { hasInheritedInspectorOption, releaseInheritedInspectorForChild } from "./inspector-policy.ts";
 import { handleBootstrapSelfUpdate } from "./self-update-bootstrap.ts";
 
+// Upstream's `cli/setup.ts` helper is deliberately not used here: this launcher only decides the
+// runtime and process structure, and `cli-main.ts` performs the equivalent process/title/env/http
+// setup for both entry paths (Node launcher and the Bun binary).
+
 /**
  * Hand a Bun-installed CLI to Bun before anything else runs.
  *
@@ -126,6 +130,16 @@ async function spawnFullCli(): Promise<number> {
 if (isRootCommand(args) && (args.includes("--version") || args.includes("-v"))) {
 	console.log(DISPLAY_VERSION);
 	process.exit();
+}
+
+// Help is static text plus the flags extensions registered, so a launch that already knows those
+// flags must not import the engine graph to print them. The import stays dynamic for the same
+// reason `cli-main` is: a static one would evaluate that graph before this answer.
+if (isRootCommand(args) && args.some((arg) => arg === "--help" || arg === "-h")) {
+	const { tryPrintHelpWithoutEngine } = await import("./cli/help-fast-path.ts");
+	if (tryPrintHelpWithoutEngine(args)) {
+		process.exit();
+	}
 }
 
 if (isMissingBundledWorkspaceDependencies(getPackageDir())) {

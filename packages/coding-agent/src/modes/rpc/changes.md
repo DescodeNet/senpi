@@ -1,4 +1,237 @@
+## 2026-09-17 - Socket credit on queue acceptance, dead-peer stall budget, deliverable cut notice (#1774)
+
+### What changed
+
+- `session-event-writer.ts`: `waitForSessionBackpressure` now settles socket destinations through `acceptActors` (`SocketEventSinkActor.waitForAcceptance()`), i.e. the record having been ACCEPTED into each connection's bounded queue, instead of `settleActors` (drain to empty). `flush()` and `drainUntilEmpty()` keep `settleActors`, so close/shutdown still drain. The empty-fanout (stdio/embedder) path still returns `flush()` and keeps its stdout backpressure wait. The actor lookup moved into a private `sessionActors()`.
+- `socket-event-fanout.ts`: `DEFAULT_STALL_MS` 4000 -> 30000, redocumented as a dead-peer liveness budget that is independent of `SESSION_WORKER_LIMITS.controlMs`; new `waitForAcceptance()` states the credit contract at the queue that owns it. Byte overflow at `maxQueueBytes` still cuts immediately, and the stall cut is otherwise unchanged (notice + `onFailure(SocketEventQueueStallError)`).
+- `socket-sink.ts` (extracted from `multi-session-host.ts`, same behaviour for `writeRaw`/`waitForBackpressure`): `close()` half-closes with `socket.end()` and destroys only after `SOCKET_CUT_GRACE_MS` (5 s) if the peer has still not read, instead of `socket.destroy()`. `writeRaw` is a no-op after the cut (no write-after-end on a connection that is going away).
+
+### Why
+
+- Worker credit was returned only after every connection's queue had drained to the kernel (`session-worker-client.ts:224` -> `waitForSessionBackpressure` -> `actor.flush()`), so the slowest client paced the producing worker, whose thread waits at most `controlMs` (5 s). That forced the stall cut below 5 s, and a client merely busy for 4 s with >= 16 KB pending (macOS unix stream buffers are 8 KB each way) was cut as dead, releasing every session it owned. Credit at acceptance removes the coupling; the cut becomes a real liveness detector.
+- The notice that explains a cut was written to a transport the peer was not reading and then dropped by `socket.destroy()`, so clients saw an unexplained `end`. A half-close delivers it to any peer that resumes within the grace, and the grace keeps a peer that never returns bounded.
+- Accepted trade-off: the producer is no longer paced by the reader, so a session that outruns a peer fills that peer's 64 MiB queue and the peer is cut on overflow. Producer-side bounding of multi-MB bursts is #1438.
+- Tests: `test/suite/rpc-socket-credit.test.ts` (10 s stalled peer, 50 records/~200 KiB, credit due with zero clock movement, no cut, all records delivered after resume), `test/suite/rpc-socket-cut-notice.test.ts` (real unix socket pair: stall and overflow notices readable before EOF inside the grace, destroy at the grace), `test/suite/rpc-socket-stall.test.ts` (budget pinned at 30 s and above `controlMs`; credit without drain; only the dead peer cut; the stdio lane survives).
+
+### Why an extension could not handle it
+
+- Transport flow control, worker credit and socket teardown are host infrastructure below the extension boundary.
+
+### Expected merge conflict zones
+
+- LOW: the `settleActors`/`acceptActors` aggregation sites in `session-event-writer.ts`, `DEFAULT_STALL_MS` and its comment in `socket-event-fanout.ts`, and the removed `socketSink` body in `multi-session-host.ts` (now `socket-sink.ts`). Upstream has no socket fanout.
+
+## 2026-09-17 - Retain a session across its last client's disconnect (#1776)
+
+### What changed
+
+- `open_session` accepts `retain_on_disconnect?: boolean` (default false). A retained session answers a connection drop with a DETACH: `beginClose` releases the attachment but leaves the entry `open` at zero attachments instead of transitioning to `closing`, in both the worker registry (`worker-session-registry.ts`) and the in-process registry (`session-teardown.ts`, shared by `session-registry.ts`).
+- `session-command-router.ts` passes the flag as host lifecycle policy (`RpcSessionOpenOptions`), not as part of the immutable launch profile, claims a drop-release with `{ detach: true }`, and skips the streaming-defer for retained sessions - there is no teardown to defer, so the attachment is released immediately and the turn settles on its own.
+- `list_sessions` rows carry an additive `attachments` count; `get_protocol_info` advertises the host capability `retain_on_disconnect` in multi-session mode.
+- Wire and client surface: `rpc-types.ts` types the request field and the additive `attachments` row field, `custom-capability.ts` defines the `RETAIN_ON_DISCONNECT_CAPABILITY` host string (advertised only by the multi-session router, since classic mode has no attachment refcount), `rpc-client.ts` exposes both to the in-repo client (`openSession({ retain_on_disconnect })`, `listSessions()[].attachments`), and `rpc-mode.ts` carries the updated D1 normative table in its module documentation.
+- `claimClose` options are typed so `drainAttachments` and `detach` cannot be combined: draining ENDS a session (dispose, idle eviction) and must always reach zero, while only a detach may be answered by staying open.
+
+### Why
+
+- Every session owned by a dropped connection went through the refcounted close, so a client that lost its socket for one second lost every idle session it owned and its reconnect raced the teardown (see #1774 for the stall cut that produces those disconnects). A reconnecting client needs the session to outlive the socket and to be re-attached by `sessionPath`.
+- Retention is deliberately not a new lifetime: an explicit `close_session`, host shutdown and the idle-eviction window still end a retained session, and an attach may only turn retention on, never off for clients already relying on it.
+
+### Why an extension could not handle it
+
+- Attachment refcounting, teardown and capability advertisement are host lifecycle; no extension surface reaches them.
+
+### Expected merge conflict zones
+
+- LOW: `beginSessionClose()` in `session-teardown.ts`, `beginClose()`/`attach()`/`list()` in `worker-session-registry.ts`, `openSession()`/`list()` in `session-registry.ts`, and `open()`/`releaseConnection()`/`claimClose()` in `session-command-router.ts`.
+- LOW: the additive field/type lines in `rpc-types.ts`, `custom-capability.ts`, `rpc-client.ts` and the D1 table in `rpc-mode.ts`; the advertised capability set is pinned exactly by `test/rpc-multi-session.test.ts` and `test/auto-title-sessions-flag.test.ts`, so any lane adding a capability conflicts there. Does not touch `socket-event-fanout.ts`, `session-event-writer.ts` or `session-worker-client.ts`.
+
+## 2026-09-15 - Watchdog ppid fallback: zero-spawn supervisor check (#1507)
+
+### What changed
+
+- `host-watchdog.ts` `watchPpid` drops the 250ms `readProcessIdentity` (`ps -o lstart=`) probe: a dead supervisor is reaped by its own parent and this process is then reparented, so `kill(pid, 0)` plus the `process.ppid` comparison (both free syscalls) detect the loss with no child process at all.
+
+### Why
+
+- A long-lived shared RPC host spawned `ps` 4x/second against its live supervisor; on runtimes whose `execFile` does not reap, those children accumulated as zombies (9,386 measured, every spawn on the host then failed with EAGAIN). The probe also fired the watchdog (host shutdown) after three consecutive probe failures against a LIVE supervisor - an observability gap, not a death.
+
+### Why an extension could not handle it
+
+- The watchdog is internal host lifecycle; no extension surface reaches it.
+
+### Expected merge conflict zones
+
+- LOW: `watchPpid` body and the removed `HOST_WATCH_PPID_PROBE_TIMEOUT_MS`. Fire reasons and the fd path are unchanged; supervisor death is still detected (at reparenting instead of during the zombie window).
+
 # changes
+
+## 2026-09-14 - Publish RPC close only after registry removal (#1656)
+
+### What changed
+
+- `closeMarked()` still replies on the close-grace deadline and keeps the entry until native exit, so a worker stuck in a syscall cannot hang cancel/close. The router waits for that exit callback before emitting `session_closed` or the close acknowledgement.
+- `session-worker-client.ts` defers worker-failure terminal records until after the same exit callback, so error and failure frames observe an empty registry too.
+- `shutdown.ts` makes reentrant `shutdown()` join the in-flight disposer and preserve a non-zero exit code (serializer-error overlapping stdin EOF).
+
+### Why
+
+- An immediate `list_sessions` after close must never return the closed session, including when the worker fails instead of a clean `close_session`.
+- A second shutdown caller must not `process.exit` while watcher disposal is still outstanding.
+
+### Why an extension could not handle it
+
+- Session registry ownership and process exit are host lifecycle, outside session extensions.
+
+### Expected merge conflict zones
+
+- LOW: `closeMarked()` in `worker-session-registry.ts`, `fail()` in `session-worker-client.ts`, and the stdio `shutdown()` wrapper in `rpc-mode.ts`. Does not touch `host-lifecycle.ts` / `host-ensure.ts`.
+
+## 2026-09-14 - Keep bundled workers out of supervisor entry dispatch
+
+### What changed
+
+- `packages/coding-agent/src/modes/rpc/host-lifecycle.ts` excludes the Node bundle from its standalone supervisor entry check. Explicit supervisor dispatch, unbundled Node, and Bun behavior are unchanged.
+
+### Why
+
+- esbuild gives every inlined module the unsplit worker's URL. The supervisor's source-file equality check therefore mistook the session worker for the supervisor CLI and exited with usage before the worker could open a session (Refs #1656).
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/modes/rpc/host-lifecycle.ts` performs entry dispatch before session runtime or extension initialization.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/rpc/host-lifecycle.ts`: config import and standalone entry guard.
+
+## 2026-09-13 - Reset supervisor idle time at occupancy transitions (#1290)
+
+### What changed
+
+- `packages/coding-agent/src/modes/rpc/host-lifecycle.ts` updates its idle decider when a public client attaches or detaches and when an observed turn starts or settles, not only on timer ticks. The timer remains the shutdown trigger.
+- A clock-controlled subprocess regression exchanges real RPC records between ticks, reconnects successfully, and proves clean exit only after the new continuous idle window expires.
+
+### Why
+
+- A short readiness connection could begin and end between ticks without resetting a previous idle window. The next tick could close the public listener immediately after readiness, producing a Windows named-pipe `ENOENT` before the lifecycle test could open a session. Occupancy transitions must invalidate the old window synchronously.
+
+### Why an extension could not handle it
+
+- Connection occupancy and the shutdown clock belong to the shared supervisor, outside session extensions.
+
+### Expected merge conflict zones
+
+- LOW: the public proxy's attach/detach callbacks and observer event handling in `host-lifecycle.ts`.
+## 2026-09-13 - Register compiled provider modules in each session worker
+
+### What changed
+
+- `packages/coding-agent/src/modes/rpc/session-worker.ts` imports the Bun runtime registration entry through a literal dynamic import when `isBunBinary`, before accepting messages.
+
+### Why
+
+- Provider overrides are isolate-local: registration in the launcher cannot satisfy lazy implementation loads in a shared-session worker. Relocated compiled probes and a worker-registration mutation distinguish both paths.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/modes/rpc/session-worker.ts` owns isolate startup before the session loads extensions and accepts RPC commands.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/rpc/session-worker.ts` startup imports and initialization before `parentPort` message subscription.
+
+## 2026-09-12 - Queued RPC input carries its source to extension `input` handlers
+
+### What changed
+
+- `packages/coding-agent/src/modes/rpc/connection-handler.ts`: `steer` and `follow_up` commands pass `{ enqueueOrder, source: "rpc" }` to `AgentSession.steer()` / `followUp()`, so queued input runs extension `input` handlers and skill or template expansion with `source: "rpc"` instead of the interactive default (upstream faa9863cb, adopted per D-N in the fork's `inputId` / disposition shape).
+- `packages/coding-agent/src/modes/rpc/rpc-mode.ts` keeps the fork deletion of `handleCommand`; the upstream two-line change lives in the connection handler.
+
+### Why
+
+- Extensions that filter or rewrite input by source were bypassed for queued RPC messages while `prompt` already honored them.
+
+### Why an extension could not handle it
+
+- The handler dispatch happens inside the session before any extension sees the message.
+
+### Expected merge conflict zones
+
+- The `steer` / `follow_up` command branches in `connection-handler.ts` and the `InputSource` union in `src/core/extensions/types.ts`.
+
+## 2026-09-12 - Release session-write grants a worker no longer holds (senpi#1612)
+
+### What changed
+
+- `packages/coding-agent/src/modes/rpc/session-path-reservations.ts` is the new owner of canonical
+  path ownership: it grants, counts, reconciles against a worker's live writers, and reports
+  `granted` / `conflict` / `limit` with the wire code each denial maps to.
+- `packages/coding-agent/src/modes/rpc/worker-session-registry.ts` reconciles a fully open entry on
+  every snapshot (releasing superseded paths and re-keying the entry), reconciles once more before
+  denying a full budget, exposes `reservationCount(handle)`, and only maps an opening spelling to a
+  grant that is still held. Opening, closing and quarantined entries keep every path until exit.
+- `packages/coding-agent/src/modes/rpc/session-worker-protocol.ts` carries `liveSessionPaths` on
+  `WorkerSnapshot` and names the wait-signal codes (`WORKER_CREDIT_CODES`, `SessionWriteGrant`).
+- `packages/coding-agent/src/modes/rpc/session-worker.ts` publishes those live paths and delegates
+  its blocking host exchanges to the new
+  `packages/coding-agent/src/modes/rpc/session-worker-credit.ts`, which reports an exhausted budget
+  as `session_reservation_limit` and a held path as `session_path_in_use`.
+- `packages/coding-agent/src/modes/rpc/session-worker-client.ts` gains the `reconcile` callback,
+  answers a reservation with the host's grant, and encodes wait signals through the new
+  `packages/coding-agent/src/modes/rpc/session-worker-signals.ts`.
+- `packages/coding-agent/src/modes/rpc/rpc-types.ts` and `session-registry.ts` add the
+  `session_reservation_limit` error code; `packages/coding-agent/docs/rpc.md` documents the
+  release-on-supersede semantics and the new code.
+- `packages/coding-agent/test/suite/regressions/1612-rpc-session-grant-release.test.ts` pins 70
+  consecutive `new_session` commands on one worker, the superseded path reopening in a new worker,
+  the budget-versus-conflict denial codes, and the live-writer registry.
+
+### Why
+
+- Grants were held for a worker's whole lifetime, so a long-lived session died at the 64-path cap
+  with `session_path_in_use` and its earlier session files stayed unopenable for the host's life.
+
+### Why an extension could not handle it
+
+- Path grants, worker snapshots and the shared host's reservation budget live in the RPC transport
+  layer, above the worker isolate an extension runs in.
+
+### Expected merge conflict zones
+
+- MEDIUM: `worker-session-registry.ts` reserve/attach bookkeeping.
+- LOW: the `session-worker.ts` credit exchange, the client's `receive` switch, and the
+  `WorkerSnapshot` shape.
+
+## 2026-09-12 - Keep a live host whose identity probe is starved
+
+### What changed
+
+- `packages/coding-agent/src/modes/rpc/host-ensure.ts` registers a spawned host whose process
+  identity stayed unreadable with a guard-less pidfile (`processStartTime: null`) instead of
+  throwing and terminating the child, and the unhurried second read now honors the injected test
+  probe so the starved-probe path is reachable without a Windows runner.
+- `matchesPidFileOrUnknown` maps `ProcessIdentityUnreadableError` to "not ours" for the reuse
+  decision, so an observation gap starts a fresh host instead of failing the whole ensure.
+- `packages/coding-agent/test/rpc-host-ensure.test.ts` pins the registration, the guard-less
+  reuse path, and the restart from a guard-less pidfile.
+
+### Why
+
+- Every win32 identity attempt spawns `powershell.exe` with `Get-CimInstance` under a 1s timeout.
+  On a loaded runner all attempts time out, so a healthy host that had already bound its pipe was
+  refused and killed with `started but its process identity stayed unreadable`. The comment above
+  that throw already stated the intended behavior - keep the healthy host - while the code did the
+  opposite; this is the CI failure observed on the `RPC named pipes (Windows)` job.
+
+### Why an extension could not handle it
+
+- Host registration and ownership probing run inside the RPC supervisor before any extension is
+  loaded.
+
+### Expected merge conflict zones
+
+- LOW around the `startHost` identity block and `ensureHostLocked`'s ownership call in
+  `host-ensure.ts`.
 
 ## 2026-09-11 - Preserve shared hosts across transient empty identity probes
 
@@ -1608,3 +1841,22 @@ wire shape, multi-session tagging, and payload validation responsibilities.
 - RPC command unions, response unions, and client methods.
 
 - Added append_session_entry RPC transport for verbatim shared-host setup mutations, preserving entry shape and order.
+
+## 2026-09-12 - Sync CI repair: RPC client stop kills the real spawned host under bun re-exec
+
+### What changed
+
+- `packages/coding-agent/src/modes/rpc/rpc-client.ts`: `RpcClient.stop()` kills the process tree of the RPC host it spawned, not only the wrapper pid, so under `SENPI_RUNTIME=bun` (where cli.ts re-execs the node wrapper under Bun) the real Bun host is terminated instead of being orphaned and leaking an ENOTEMPTY temp-dir error into `afterEach`.
+
+### Why
+
+- The wrapper exits immediately after re-exec, so resolving `stop()` on the wrapper's exit event left the real host holding the session dir open; the merged bun re-exec made that wrapper indistinguishable from the host.
+
+### Why an extension could not handle it
+
+- Process lifecycle for the RPC transport is host-side plumbing below the extension layer.
+
+### Expected merge conflict zones
+
+- LOW: the `stop()` implementation and the spawn bookkeeping in `rpc-client.ts`.
+

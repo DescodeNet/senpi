@@ -51,7 +51,7 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/settings` | Theme, message delivery, transport, and other preferences |
 | `/resume` | Pick from previous sessions |
 | `/new` | Start a new session |
-| `/name <name>` | Set session display name |
+| `/rename [name]` | Rename the current session (`/name` is an alias) |
 | `/session` | Show session file, ID, messages, tokens, and cost |
 | `/tree` | Jump to any point in the session and continue from there |
 | `/trust` | Save project trust decision for future sessions |
@@ -240,6 +240,14 @@ cat README.md | senpi -p "Summarize this text"
 | `--no-tools`, `-nt` | Disable all tools |
 
 Built-in tools: `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`.
+
+#### `grep` tool contract
+
+Use `tool.grep({ pattern, path, glob, ignoreCase, literal, context, before, after, mode, limit, skip, timeoutMs, hidden, gitignore })` inside eval. `pattern` is required; `path` accepts a file, directory, array, or a `<file>:L1-L2` selector. `glob` accepts positive patterns and `!` exclusions. `mode` is `content` (default), `count`, or `files`; `limit` and `skip` paginate file results. `before`/`after` override `context`.
+
+Content output uses `path` blocks with `N: match` and `N- context` rows, followed by a footer such as `[grep: matches=2 files=2 searched=42 elapsedMs=8 engine=native nextSkip=none]`. The footer is always present. Tool results include `details` v1 with structured matches, file counts, scan status, and pagination metadata.
+
+The engine is selected automatically. `SENPI_GREP_ENGINE=auto|native|rg` selects the preferred engine, and `SENPI_GREP_NATIVE_PATH` overrides the native addon path. Native search honors filesystem policy and ignore files; ripgrep is the fallback.
 
 ### Resource Options
 

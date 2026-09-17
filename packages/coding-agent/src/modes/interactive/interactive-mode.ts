@@ -19,7 +19,6 @@ import type {
 	OverlayHandle,
 	OverlayOptions,
 	SlashCommand,
-	Terminal,
 	TuiMainScreenRenderState,
 } from "@earendil-works/pi-tui";
 import * as TuiLayouts from "@earendil-works/pi-tui";
@@ -27,6 +26,7 @@ import {
 	CombinedAutocompleteProvider,
 	type Component,
 	Container,
+	decodeKittyPrintable,
 	fuzzyFilter,
 	getCapabilities,
 	hyperlink,
@@ -34,7 +34,7 @@ import {
 	Markdown,
 	matchesKey,
 	outerKittyGraphicsMode,
-	ProcessTerminal,
+	SelectList,
 	Spacer,
 	sanitizeTerminalLabel,
 	setCapabilityOverrides,
@@ -81,6 +81,7 @@ import {
 import { resolveChangelogSource } from "../../core/changelog-source.ts";
 import { collectEntriesForBranchSummary } from "../../core/compaction/branch-summarization.ts";
 import { AssistantEditError, assistantTextEquals } from "../../core/edited-assistant-message.ts";
+import { formatUserMessage } from "../../core/extensions/builtin/ask-user/format.ts";
 import type {
 	AutocompleteProviderFactory,
 	EditorFactory,
@@ -97,7 +98,7 @@ import type {
 import { buildNoticeBox, type NoticeLine, type NoticeSpec } from "../../core/extensions/notice/index.ts";
 import type { QuestionRequest, QuestionResponse } from "../../core/extensions/types.ts";
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
-import { appendHiddenTuiStdout, appendUncaughtCrashLog } from "../../core/hidden-stdout-log.ts";
+import { appendUncaughtCrashLog } from "../../core/hidden-stdout-log.ts";
 import { buildHighReasoningWarning } from "../../core/high-reasoning-warning.ts";
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
@@ -122,6 +123,7 @@ import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
 import { formatTimings, time } from "../../core/timings.ts";
+import { withBuiltInRenderers } from "../../core/tools/renderers/index.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
 import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
@@ -135,21 +137,22 @@ import { copyToClipboard, readClipboardText } from "../../utils/clipboard.ts";
 import { readClipboardImage } from "../../utils/clipboard-image.ts";
 import { parseGitUrl } from "../../utils/git.ts";
 import { processImage } from "../../utils/image-process.ts";
-import { openBrowser } from "../../utils/open-browser.ts";
 import { getCwdRelativePath } from "../../utils/paths.ts";
 import { getPiUserAgent } from "../../utils/pi-user-agent.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { ensureTool, type ToolStatus } from "../../utils/tools-manager.ts";
 import { checkForNewPiVersion, getReleaseChangelogUrl } from "../../utils/version-check.ts";
 import { abortedMessageForRendering } from "./aborted-error-label.ts";
+import { createChatViewport } from "./chat-viewport.ts";
 import {
 	type CompactionQueuedMessage,
 	transferCompactionQueue,
 	waitForPromptDisposition,
 } from "./compaction-queue-transfer.ts";
 import { ArminComponent } from "./components/armin.ts";
+import { getAskUserAnswerHeaders, parseAskUserAnswerFrame } from "./components/ask-user-answer-chip.ts";
+import { matchesAskUserAnswerKey } from "./components/ask-user-answer-key.ts";
 import {
-	ASK_USER_ANSWER_KEY,
 	ASK_USER_WIDGET_KEY,
 	AskUserAsyncWidget,
 	buildCommentResponse,
@@ -157,7 +160,7 @@ import {
 	unansweredIds,
 } from "./components/ask-user-async-widget.ts";
 import { AskUserQuestionComponent } from "./components/ask-user-question.ts";
-import type { QuestionDraft } from "./components/ask-user-question-state.ts";
+import { formatCountdownLabel, type QuestionDraft } from "./components/ask-user-question-state.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
 import { BorderedLoader } from "./components/bordered-loader.ts";
@@ -176,6 +179,7 @@ import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
 import { FavoriteModelsSelectorComponent } from "./components/favorite-models-selector.ts";
 import { FooterComponent, formatTokens } from "./components/footer.ts";
 import { formatKeyText, keyDisplayText, keyHint, keyText, rawKeyHint } from "./components/keybinding-hints.ts";
+import { LoadedResourceSection } from "./components/loaded-resource-section.ts";
 import { LoginDialogComponent } from "./components/login-dialog.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
 import {
@@ -219,6 +223,18 @@ import { GrokChrome, type InteractiveChrome, type InteractiveFooter } from "./gr
 import type { InteractiveSession } from "./interactive-host-runtime.ts";
 import { restoreInteractiveStderr, takeOverInteractiveStderr } from "./interactive-stderr-guard.ts";
 import { applyKeybindingsFileEdit, seedKeybindingsFile } from "./keybindings-command.ts";
+import {
+	buildResourceScopeGroups,
+	type DisplaySourceInfo,
+	formatResourceScopeGroups,
+	getDisplaySourceInfo,
+	getScopeAutocompleteTag,
+	isPackageSourceInfo,
+	isSystemResource,
+	type ResourceScopeGroupFormat,
+	type ResourceScopeGroups,
+	type ScopedResource,
+} from "./loaded-resource-scopes.ts";
 import { describeLoginFailure, type LoginFailureNotice } from "./login-outcome.ts";
 import { refreshModelCatalogs } from "./model-catalog-refresh.ts";
 import { getModelSearchText } from "./model-search.ts";
@@ -229,6 +245,7 @@ import {
 	getAvailableThemesWithPaths,
 	getEditorTheme,
 	getMarkdownTheme,
+	getSelectListTheme,
 	getThemeByName,
 	onThemeChange,
 	setRegisteredThemes,
@@ -243,11 +260,13 @@ import { recordTipShown } from "./tips/history-writer.ts";
 import { TIP_DEFINITIONS } from "./tips/registry.ts";
 import { appendStartupHeader } from "./tips/startup-header.ts";
 import { resolveStartupTipLine } from "./tips/startup-tip.ts";
+import { appendTipLine } from "./tips/tip-line.ts";
 import { resolveWorkingTipLine, WorkingTipCache, type WorkingTipLine } from "./tips/working-tip.ts";
 import { buildTmuxSetupWarning } from "./tmux-setup.ts";
 import { ToolArgsRevealController } from "./tool-args-reveal.ts";
 import { readToolProgress } from "./tool-progress.ts";
 import { ToolResultRevealController } from "./tool-result-reveal.ts";
+import { createInteractiveTui, createInteractiveTuiReference } from "./tui-renderer.ts";
 import { formatDisplayVersion } from "./version-label.ts";
 import {
 	blendWorkingStatusShimmerRgbColor,
@@ -259,6 +278,8 @@ import {
 	type WorkingStatusRgbColor,
 } from "./working-status.ts";
 
+export { createInteractiveTui, createInteractiveTuiReference } from "./tui-renderer.ts";
+
 /** Interface for components that can be expanded/collapsed */
 interface Expandable {
 	setExpanded(expanded: boolean): void;
@@ -268,6 +289,37 @@ function llamaCppPostLoginGuidance(actionLabel: string, loadedModelCount: number
 	return loadedModelCount === 0
 		? `${actionLabel}. No llama.cpp models are loaded. Use /llama to load a model, then /model to select it.`
 		: `${actionLabel}. Use /model to select a loaded llama.cpp model, or /llama to manage models.`;
+}
+
+interface WorkingStatusEditor extends EditorComponent {
+	readonly embedWorkingStatus: boolean;
+	setWorkingStatusIndicator(indicator: StatusIndicator | undefined): void;
+}
+
+function isWorkingStatusEditor(editor: EditorComponent): editor is WorkingStatusEditor {
+	return (
+		"embedWorkingStatus" in editor &&
+		editor.embedWorkingStatus === true &&
+		"setWorkingStatusIndicator" in editor &&
+		typeof editor.setWorkingStatusIndicator === "function"
+	);
+}
+
+/**
+ * Hand the active status indicator to the editor border. Returns whether it was embedded; when it
+ * was not, the caller keeps the indicator in the standalone status row. The base editor may be
+ * absent on renderer-only hosts and the active editor may be an extension editor that never opts
+ * in, so both are probed instead of assumed.
+ */
+function embedStatusIndicatorInEditor(
+	defaultEditor: EditorComponent | undefined,
+	editor: EditorComponent | undefined,
+	indicator: StatusIndicator | undefined,
+): boolean {
+	if (defaultEditor && isWorkingStatusEditor(defaultEditor)) defaultEditor.setWorkingStatusIndicator(undefined);
+	if (!editor || !isWorkingStatusEditor(editor)) return false;
+	editor.setWorkingStatusIndicator(indicator);
+	return true;
 }
 
 function isExpandable(obj: unknown): obj is Expandable {
@@ -788,12 +840,17 @@ type HostUiCapableRuntime = {
 
 type QuestionOverlayOptions = ExtensionUIDialogOptions & {
 	onProgress?: (draft: QuestionDraft) => void;
+	getDeadlineAtMs?: () => number;
+	notifyArrival?: boolean;
 };
 
 /** A waitForAnswer=false question parked behind the collapsed editor widget. */
 type AsyncQuestionState = {
 	request: QuestionRequest;
 	timeoutMs: number;
+	askedAtMs: number;
+	completion: Promise<QuestionResponse>;
+	getDeadlineAtMs?: () => number;
 	onProgress?: (draft: QuestionDraft) => void;
 	/** Last draft seen from the expanded component; kept across Esc so typed comments carry it. */
 	draft: QuestionDraft;
@@ -807,70 +864,6 @@ function linesFactory(lines: string[] | undefined): ((tui: TUI, thm: Theme) => C
 		for (const line of lines) container.addChild(new Text(line, 1, 0));
 		return container;
 	};
-}
-
-interface InteractiveTuiOptions {
-	tuiMode: TuiMode;
-	showHardwareCursor: boolean;
-	logDirectory: string;
-	terminal?: Terminal;
-	onRightClickPaste?: () => void;
-	fullscreenCopyOnSelect?: boolean;
-}
-
-/** Composition root for selecting the interactive terminal renderer. */
-export function createInteractiveTui(options: InteractiveTuiOptions): TuiMainScreen | TuiAltScreen {
-	const terminal = options.terminal ?? new ProcessTerminal({ onExternalStdoutWrite: appendHiddenTuiStdout });
-	if (options.tuiMode === "fullscreen") {
-		const styleSearchMatch = (text: string) => theme.bg("searchMatchBg", theme.fg("searchMatchText", text));
-		return new TuiAltScreen(terminal, options.showHardwareCursor, options.logDirectory, {
-			searchMatchStyle: (text) => theme.underline(styleSearchMatch(text)),
-			searchCurrentMatchStyle: (text) => theme.bold(theme.inverse(styleSearchMatch(text))),
-			openUrl: openBrowser,
-			onRightClickPaste: options.onRightClickPaste,
-			copyOnSelect: options.fullscreenCopyOnSelect,
-			copySelection: async (text) => {
-				try {
-					await copyToClipboard(text);
-					return true;
-				} catch {
-					return false;
-				}
-			},
-		});
-	}
-	return new TuiMainScreen(terminal, options.showHardwareCursor, options.logDirectory);
-}
-
-/** Stable reference for components while InteractiveMode replaces the active renderer. */
-export function createInteractiveTuiReference(getTui: () => TUI): TUI {
-	return new Proxy({} as TUI, {
-		get: (_target, property) => {
-			const tui = getTui();
-			const value = Reflect.get(tui, property, tui);
-			if (typeof value !== "function") return value;
-			let methodTui = tui;
-			let method = value;
-			return (...args: unknown[]) => {
-				const currentTui = getTui();
-				if (currentTui !== methodTui) {
-					const currentMethod = Reflect.get(currentTui, property, currentTui);
-					if (typeof currentMethod !== "function") {
-						throw new TypeError(`TUI property ${String(property)} is not callable`);
-					}
-					methodTui = currentTui;
-					method = currentMethod;
-				}
-				return Reflect.apply(method, methodTui, args);
-			};
-		},
-		set: (_target, property, value) => {
-			const tui = getTui();
-			return Reflect.set(tui, property, value, tui);
-		},
-		has: (_target, property) => Reflect.has(getTui(), property),
-		getPrototypeOf: () => Reflect.getPrototypeOf(getTui()),
-	});
 }
 
 export class InteractiveMode {
@@ -941,6 +934,7 @@ export class InteractiveMode {
 	 */
 	private preResolvedSubmissionImages?: ImageContent[];
 	private activeStatusIndicator: StatusIndicator | undefined = undefined;
+	private activeWorkingIndicatorEmbedded = false;
 	private readonly idleStatus = new IdleStatus();
 	private workingMessage: string | undefined = undefined;
 	private workingVisible = true;
@@ -1046,7 +1040,21 @@ export class InteractiveMode {
 	private extensionInput: ExtensionInputComponent | undefined = undefined;
 	private extensionEditor: ExtensionEditorComponent | undefined = undefined;
 	private askUserQuestion: AskUserQuestionComponent | undefined = undefined;
-	private asyncQuestion: AsyncQuestionState | undefined = undefined;
+	private pendingQuestions = new Map<string, AsyncQuestionState>();
+	private pendingOrder: string[] = [];
+	private shownQuestionId: string | undefined;
+	private questionSurface: "collapsed" | "list" | "expanded" = "collapsed";
+	private composerDestination: { kind: "chat" } | { kind: "answer"; requestId: string } = { kind: "chat" };
+	private readonly questionArrivalEpochMs = Date.now();
+	private blockingQuestionHeader: string | undefined;
+	private wantsMouseLease = false;
+	private releaseMouseLease?: () => void;
+	private releaseAlwaysMouseLease?: () => void;
+	private questionMousePaused = false;
+
+	private get shownQuestion(): AsyncQuestionState | undefined {
+		return this.shownQuestionId === undefined ? undefined : this.pendingQuestions.get(this.shownQuestionId);
+	}
 	private extensionTerminalInputSubscriptions = new Set<{
 		handler: (data: string) => { consume?: boolean; data?: string } | undefined;
 		unsubscribe: () => void;
@@ -1115,6 +1123,7 @@ export class InteractiveMode {
 			logDirectory: getAgentDir(),
 			onRightClickPaste: this.onRightClickPaste,
 			fullscreenCopyOnSelect: this.settingsManager.getFullscreenCopyOnSelect?.() ?? true,
+			mouse: this.terminalMouseMode !== "off",
 		});
 		this.ui = createInteractiveTuiReference(() => this.renderer);
 		this.streamingReveal = new StreamingRevealController({
@@ -1168,6 +1177,7 @@ export class InteractiveMode {
 			this.defaultEditor = new CustomEditor(this.ui, getEditorTheme(), this.keybindings, {
 				paddingX: editorPaddingX,
 				autocompleteMaxVisible,
+				embedWorkingStatus: true,
 			});
 		}
 		this.editor = this.defaultEditor;
@@ -1200,7 +1210,7 @@ export class InteractiveMode {
 			return undefined;
 		}
 
-		const scopePrefix = sourceInfo.scope === "user" ? "u" : sourceInfo.scope === "project" ? "p" : "t";
+		const scopePrefix = getScopeAutocompleteTag(sourceInfo.scope);
 		const source = sourceInfo.source.trim();
 
 		if (source === "auto" || source === "local" || source === "cli") {
@@ -1376,6 +1386,40 @@ export class InteractiveMode {
 		this.chatContainer.addChild(new DynamicBorder());
 	}
 
+	private get terminalMouseMode() {
+		// Renderer-only embedding hosts may omit the session settings facade.
+		return this.runtimeHost?.session?.settingsManager?.getTerminalMouse?.() ?? "whilePending";
+	}
+
+	private syncQuestionMouseCapture(): void {
+		this.wantsMouseLease = (this.pendingQuestions?.size ?? 0) > 0 || Boolean(this.askUserQuestion);
+		const enabled = !this.questionMousePaused && this.terminalMouseMode !== "off";
+		if (enabled && this.wantsMouseLease) this.releaseMouseLease ??= this.ui.acquireMouseCapture("pending-question");
+		else {
+			this.releaseMouseLease?.();
+			this.releaseMouseLease = undefined;
+		}
+		if (enabled && this.terminalMouseMode === "always" && this.ui.mode === "regular") {
+			this.releaseAlwaysMouseLease ??= this.ui.acquireMouseCapture("always");
+		} else {
+			this.releaseAlwaysMouseLease?.();
+			this.releaseAlwaysMouseLease = undefined;
+		}
+	}
+
+	private pauseQuestionMouseCapture(): void {
+		this.questionMousePaused = true;
+		this.releaseMouseLease?.();
+		this.releaseMouseLease = undefined;
+		this.releaseAlwaysMouseLease?.();
+		this.releaseAlwaysMouseLease = undefined;
+	}
+
+	private resumeQuestionMouseCapture(): void {
+		this.questionMousePaused = false;
+		this.syncQuestionMouseCapture();
+	}
+
 	private mountInteractiveTui(tui: TuiMainScreen | TuiAltScreen, components: readonly Component[]): void {
 		for (const component of components) tui.addChild(component);
 		if (TuiLayouts.isViewportTUI(tui)) {
@@ -1390,12 +1434,13 @@ export class InteractiveMode {
 			this.switchTuiMode("regular", false, false);
 			this.renderer.renderNow();
 		}
+		this.pauseQuestionMouseCapture();
 		this.ui.stop({ preserveScreen: this.renderer.mode === "fullscreen" });
 	}
 
-	private switchTuiMode(mode: TuiMode, restoreProgress = true, startRenderer = true): boolean {
+	private switchTuiMode(mode: TuiMode, restoreProgress = true, startRenderer = true, recreate = false): boolean {
 		const previousUi = this.renderer;
-		if (mode === previousUi.mode) return true;
+		if (mode === previousUi.mode && !recreate) return true;
 		if (previousUi.hasOverlayEntries) return false;
 
 		const components = [...previousUi.children];
@@ -1408,6 +1453,7 @@ export class InteractiveMode {
 			this.mainScreenRenderState = previousUi.captureRenderState();
 		}
 
+		this.pauseQuestionMouseCapture();
 		previousUi.stop({ preserveScreen: true });
 		previousUi.setFocus(null);
 		// Detach, not clear: the same live components (spinners, reveals, extension
@@ -1424,6 +1470,7 @@ export class InteractiveMode {
 			terminal,
 			onRightClickPaste: this.onRightClickPaste,
 			fullscreenCopyOnSelect: this.runtimeHost?.session?.settingsManager?.getFullscreenCopyOnSelect?.() ?? true,
+			mouse: this.terminalMouseMode !== "off",
 		});
 		nextUi.setClearOnShrink(clearOnShrink);
 		nextUi.onDebug = onDebug;
@@ -1437,6 +1484,7 @@ export class InteractiveMode {
 		nextUi.setFocus(focus);
 		if (!startRenderer) return true;
 		nextUi.start();
+		this.resumeQuestionMouseCapture();
 		this.themeController.rebindTui();
 		this.rebindExtensionTerminalInputListeners();
 		if (
@@ -1474,32 +1522,21 @@ export class InteractiveMode {
 
 		// Keep one component tree and remount it when changing renderers.
 		this.renderWidgets(); // Initialize with default spacer
-		this.transcriptScrollView = new TuiLayouts.ScrollView(this.documentContainer, {
-			follow: "end",
-			primary: true,
-			overscroll: "chain",
+		const viewport = createChatViewport({
+			document: this.documentContainer,
+			pendingMessages: this.pendingMessagesContainer,
+			status: this.statusContainer,
+			hookStatus: this.hookStatusContainer,
+			widgetsAbove: this.widgetContainerAbove,
+			editor: this.editorContainer,
+			widgetsBelow: this.widgetContainerBelow,
+			footer: this.footerContainer,
 			scrollbar: this.settingsManager.getFullscreenScrollbar(),
-			scrollbarStyle: (text) => theme.bg("scrollbarThumb", text),
+			scrollbarTrackStyle: (text) => theme.fg("scrollbarTrack", text),
+			scrollbarThumbStyle: (text) => theme.fg("scrollbarThumb", text),
 		});
-		const dock = new TuiLayouts.VStack([
-			{ component: this.pendingMessagesContainer, shrink: 1, minSize: 0 },
-			{ component: this.statusContainer, shrink: 1, minSize: 0 },
-			{ component: this.hookStatusContainer, shrink: 1, minSize: 0 },
-			{ component: this.widgetContainerAbove, shrink: 1, minSize: 0 },
-			{ component: this.editorContainer, shrink: 1, minSize: 3 },
-			{ component: this.widgetContainerBelow, shrink: 1, minSize: 0 },
-			{ component: this.footerContainer, shrink: 1, minSize: 1 },
-		]);
-		this.fullscreenLayoutRoot = new TuiLayouts.VStack([
-			{
-				component: this.transcriptScrollView,
-				basis: 0,
-				grow: 1,
-				shrink: 1,
-				minSize: 1,
-			},
-			{ component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 },
-		]);
+		this.transcriptScrollView = viewport.transcript;
+		this.fullscreenLayoutRoot = viewport.root;
 		const rootComponents = [
 			this.documentContainer,
 			this.pendingMessagesContainer,
@@ -1528,6 +1565,7 @@ export class InteractiveMode {
 		try {
 			takeOverInteractiveStderr();
 			this.ui.start();
+			this.resumeQuestionMouseCapture();
 		} catch (error) {
 			restoreInteractiveStderr();
 			throw error;
@@ -1664,9 +1702,11 @@ export class InteractiveMode {
 	}
 
 	private applyTerminalTitle(): void {
+		const questionHeader = this.shownQuestion?.request.questions[0]?.header ?? this.blockingQuestionHeader;
 		this.ui.terminal.setTitle(
 			this.activeToolTerminalTitle ??
 				this.activeToolExecutionTerminalTitle ??
+				(questionHeader === undefined ? undefined : `? ${questionHeader}`) ??
 				this.extensionTerminalTitle ??
 				this.getNormalTerminalTitle(),
 		);
@@ -2187,122 +2227,20 @@ export class InteractiveMode {
 		});
 	}
 
-	private getDisplaySourceInfo(sourceInfo?: SourceInfo): {
-		label: string;
-		scopeLabel?: string;
-		color: "accent" | "muted";
-	} {
-		const source = sourceInfo?.source ?? "local";
-		const scope = sourceInfo?.scope ?? "project";
-		if (source === "local") {
-			if (scope === "user") {
-				return { label: "user", color: "muted" };
-			}
-			if (scope === "project") {
-				return { label: "project", color: "muted" };
-			}
-			if (scope === "temporary") {
-				return { label: "path", scopeLabel: "temp", color: "muted" };
-			}
-			return { label: "path", color: "muted" };
-		}
-
-		if (source === "cli") {
-			return {
-				label: "path",
-				scopeLabel: scope === "temporary" ? "temp" : undefined,
-				color: "muted",
-			};
-		}
-
-		const scopeLabel =
-			scope === "user" ? "user" : scope === "project" ? "project" : scope === "temporary" ? "temp" : undefined;
-		return { label: source, scopeLabel, color: "accent" };
-	}
-
-	private getScopeGroup(sourceInfo?: SourceInfo): "user" | "project" | "path" {
-		const source = sourceInfo?.source ?? "local";
-		const scope = sourceInfo?.scope ?? "project";
-		if (source === "cli" || scope === "temporary") return "path";
-		if (scope === "user") return "user";
-		if (scope === "project") return "project";
-		return "path";
+	private getDisplaySourceInfo(sourceInfo?: SourceInfo): DisplaySourceInfo {
+		return getDisplaySourceInfo(sourceInfo);
 	}
 
 	private isPackageSource(sourceInfo?: SourceInfo): boolean {
-		const source = sourceInfo?.source ?? "";
-		return source.startsWith("npm:") || source.startsWith("git:");
+		return isPackageSourceInfo(sourceInfo);
 	}
 
-	private buildScopeGroups(items: Array<{ path: string; sourceInfo?: SourceInfo }>): Array<{
-		scope: "user" | "project" | "path";
-		paths: Array<{ path: string; sourceInfo?: SourceInfo }>;
-		packages: Map<string, Array<{ path: string; sourceInfo?: SourceInfo }>>;
-	}> {
-		const groups: Record<
-			"user" | "project" | "path",
-			{
-				scope: "user" | "project" | "path";
-				paths: Array<{ path: string; sourceInfo?: SourceInfo }>;
-				packages: Map<string, Array<{ path: string; sourceInfo?: SourceInfo }>>;
-			}
-		> = {
-			user: { scope: "user", paths: [], packages: new Map() },
-			project: { scope: "project", paths: [], packages: new Map() },
-			path: { scope: "path", paths: [], packages: new Map() },
-		};
-
-		for (const item of items) {
-			const groupKey = this.getScopeGroup(item.sourceInfo);
-			const group = groups[groupKey];
-			const source = item.sourceInfo?.source ?? "local";
-
-			if (this.isPackageSource(item.sourceInfo)) {
-				const list = group.packages.get(source) ?? [];
-				list.push(item);
-				group.packages.set(source, list);
-			} else {
-				group.paths.push(item);
-			}
-		}
-
-		return [groups.project, groups.user, groups.path].filter(
-			(group) => group.paths.length > 0 || group.packages.size > 0,
-		);
+	private buildScopeGroups(items: readonly ScopedResource[]): ResourceScopeGroups[] {
+		return buildResourceScopeGroups(items);
 	}
 
-	private formatScopeGroups(
-		groups: Array<{
-			scope: "user" | "project" | "path";
-			paths: Array<{ path: string; sourceInfo?: SourceInfo }>;
-			packages: Map<string, Array<{ path: string; sourceInfo?: SourceInfo }>>;
-		}>,
-		options: {
-			formatPath: (item: { path: string; sourceInfo?: SourceInfo }) => string;
-			formatPackagePath: (item: { path: string; sourceInfo?: SourceInfo }, source: string) => string;
-		},
-	): string {
-		const lines: string[] = [];
-
-		for (const group of groups) {
-			lines.push(`  ${theme.fg("accent", group.scope)}`);
-
-			const sortedPaths = [...group.paths].sort((a, b) => a.path.localeCompare(b.path));
-			for (const item of sortedPaths) {
-				lines.push(theme.fg("dim", `    ${options.formatPath(item)}`));
-			}
-
-			const sortedPackages = Array.from(group.packages.entries()).sort(([a], [b]) => a.localeCompare(b));
-			for (const [source, items] of sortedPackages) {
-				lines.push(`    ${theme.fg("mdLink", source)}`);
-				const sortedPackagePaths = [...items].sort((a, b) => a.path.localeCompare(b.path));
-				for (const item of sortedPackagePaths) {
-					lines.push(theme.fg("dim", `      ${options.formatPackagePath(item, source)}`));
-				}
-			}
-		}
-
-		return lines.join("\n");
+	private formatScopeGroups(groups: readonly ResourceScopeGroups[], options: ResourceScopeGroupFormat): string {
+		return formatResourceScopeGroups(groups, options);
 	}
 
 	private findSourceInfoForPath(p: string, sourceInfos: Map<string, SourceInfo>): SourceInfo | undefined {
@@ -2399,26 +2337,28 @@ export class InteractiveMode {
 		const sectionHeader = (name: string, color: ThemeColor = "mdHeading") => theme.fg(color, `[${name}]`);
 		const formatCompactList = (items: string[], options?: { sort?: boolean }): string => {
 			const labels = items.map((item) => item.trim()).filter((item) => item.length > 0);
+			if (labels.length === 0) {
+				return "";
+			}
 			if (options?.sort !== false) {
 				labels.sort((a, b) => a.localeCompare(b));
 			}
 			return theme.fg("dim", `  ${labels.join(", ")}`);
 		};
+		// System resources are left out of the compact body; a section with nothing else to show stays
+		// hidden until the listing is expanded, where the system group lists them.
 		const addLoadedSection = (
 			name: string,
 			collapsedBody: string,
 			expandedBody = collapsedBody,
 			color: ThemeColor = "mdHeading",
 		): void => {
-			const section = new ExpandableText(
-				() => `${sectionHeader(name, color)}\n${collapsedBody}`,
-				() => `${sectionHeader(name, color)}\n${expandedBody}`,
+			const section = new LoadedResourceSection(
+				collapsedBody.length === 0 ? "" : `${sectionHeader(name, color)}\n${collapsedBody}`,
+				`${sectionHeader(name, color)}\n${expandedBody}`,
 				this.getStartupExpansionState(),
-				0,
-				0,
 			);
 			this.loadedResourcesContainer.addChild(section);
-			this.loadedResourcesContainer.addChild(new Spacer(1));
 		};
 
 		const skillsResult = this.session.resourceLoader.getSkills();
@@ -2486,7 +2426,9 @@ export class InteractiveMode {
 					formatPath: (item) => this.formatDisplayPath(item.path),
 					formatPackagePath: (item) => this.getShortPath(item.path, item.sourceInfo),
 				});
-				const skillCompactList = formatCompactList(skills.map((skill) => skill.name));
+				const skillCompactList = formatCompactList(
+					skills.filter((skill) => !isSystemResource(skill.sourceInfo)).map((skill) => skill.name),
+				);
 				addLoadedSection("Skills", skillCompactList, skillList);
 			}
 
@@ -2509,7 +2451,11 @@ export class InteractiveMode {
 						return template ? `/${template.name}` : this.formatDisplayPath(item.path);
 					},
 				});
-				const promptCompactList = formatCompactList(templates.map((template) => `/${template.name}`));
+				const promptCompactList = formatCompactList(
+					templates
+						.filter((template) => !isSystemResource(template.sourceInfo))
+						.map((template) => `/${template.name}`),
+				);
 				addLoadedSection("Prompts", promptCompactList, templateList);
 			}
 
@@ -2520,7 +2466,11 @@ export class InteractiveMode {
 					formatPackagePath: (item) =>
 						this.formatExtensionDisplayPath(this.getShortPath(item.path, item.sourceInfo)),
 				});
-				const extensionCompactList = formatCompactList(this.getCompactExtensionLabels(extensions));
+				const extensionCompactList = formatCompactList(
+					this.getCompactExtensionLabels(
+						extensions.filter((extension) => !isSystemResource(extension.sourceInfo)),
+					),
+				);
 				addLoadedSection("Extensions", extensionCompactList, extList, "mdHeading");
 			}
 
@@ -2539,10 +2489,12 @@ export class InteractiveMode {
 					formatPackagePath: (item) => this.getShortPath(item.path, item.sourceInfo),
 				});
 				const themeCompactList = formatCompactList(
-					customThemes.map(
-						(loadedTheme) =>
-							loadedTheme.name ?? this.getCompactPathLabel(loadedTheme.sourcePath!, loadedTheme.sourceInfo),
-					),
+					customThemes
+						.filter((loadedTheme) => !isSystemResource(loadedTheme.sourceInfo))
+						.map(
+							(loadedTheme) =>
+								loadedTheme.name ?? this.getCompactPathLabel(loadedTheme.sourcePath!, loadedTheme.sourceInfo),
+						),
 				);
 				addLoadedSection("Themes", themeCompactList, themeList);
 			}
@@ -2791,10 +2743,11 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Get a registered tool definition by name (for custom rendering).
+	 * Extension-registered definition, falling back to the built-in one. The renderer components take
+	 * whatever this returns, so they never reach into the tool registry themselves.
 	 */
 	private getRegisteredToolDefinition(toolName: string) {
-		return this.session.getToolDefinition(toolName);
+		return withBuiltInRenderers(toolName, this.session.getToolDefinition(toolName));
 	}
 
 	private getMarkdownTransformers(): MarkdownTransformer[] {
@@ -2832,7 +2785,7 @@ export class InteractiveMode {
 				this.requestExtensionShutdown();
 			},
 			getContextUsage: () => this.session.getContextUsage(),
-			getCompactionSettings: () => this.settingsManager.getCompactionSettings(),
+			getCompactionSettings: () => this.settingsManager.getCompactionSettings(this.session.model),
 			getPromptCacheSafeWaitSeconds: () => this.session.resolvePromptCacheSafeWaitSeconds(),
 			getPromptCacheGoalBackstopMaxSeconds: () => this.settingsManager.getPromptCacheGoalBackstopMaxSeconds(),
 			getLookAtSettings: () => {
@@ -2881,10 +2834,21 @@ export class InteractiveMode {
 		};
 	}
 
+	private async withBlockedHostDialog<T>(id: string, label: string, show: () => Promise<T>): Promise<T> {
+		this.session.emitExtensionEvent("herdr:blocked", { active: true, label, id });
+		try {
+			return await show();
+		} finally {
+			this.session.emitExtensionEvent("herdr:blocked", { active: false, id });
+		}
+	}
+
 	private async handleHostUiRequest(request: HostUiRequest): Promise<HostUiResponse | undefined> {
 		switch (request.method) {
 			case "select": {
-				const value = await this.showExtensionSelector(request.title ?? "", request.options ?? []);
+				const value = await this.withBlockedHostDialog(request.id, request.title ?? "", () =>
+					this.showExtensionSelector(request.title ?? "", request.options ?? []),
+				);
 				return value === undefined
 					? { type: "extension_ui_response", id: request.id, cancelled: true }
 					: { type: "extension_ui_response", id: request.id, value };
@@ -2893,16 +2857,22 @@ export class InteractiveMode {
 				return {
 					type: "extension_ui_response",
 					id: request.id,
-					confirmed: await this.showExtensionConfirm(request.title ?? "", request.message ?? ""),
+					confirmed: await this.withBlockedHostDialog(request.id, request.title ?? "", () =>
+						this.showExtensionConfirm(request.title ?? "", request.message ?? ""),
+					),
 				};
 			case "input": {
-				const value = await this.showExtensionInput(request.title ?? "", request.placeholder);
+				const value = await this.withBlockedHostDialog(request.id, request.title ?? "", () =>
+					this.showExtensionInput(request.title ?? "", request.placeholder),
+				);
 				return value === undefined
 					? { type: "extension_ui_response", id: request.id, cancelled: true }
 					: { type: "extension_ui_response", id: request.id, value };
 			}
 			case "editor": {
-				const value = await this.showExtensionEditor(request.title ?? "", request.prefill);
+				const value = await this.withBlockedHostDialog(request.id, request.title ?? "", () =>
+					this.showExtensionEditor(request.title ?? "", request.prefill),
+				);
 				return value === undefined
 					? { type: "extension_ui_response", id: request.id, cancelled: true }
 					: { type: "extension_ui_response", id: request.id, value };
@@ -2930,6 +2900,7 @@ export class InteractiveMode {
 					},
 					{
 						timeout: remainingMs,
+						notifyArrival: request.askedAtMs === undefined || request.askedAtMs >= this.questionArrivalEpochMs,
 						onProgress: (draft) => {
 							lastDraft = draft;
 							if (progressTimer !== undefined) return;
@@ -3006,7 +2977,7 @@ export class InteractiveMode {
 			return;
 		}
 		const intervalMs = largeSessionWorkingStatusInterval(
-			this.sessionManager.getEntries().length,
+			this.sessionManager.getEntryCount(),
 			DEFAULT_WORKING_STATUS_MESSAGE_ANIMATION_INTERVAL_MS,
 			LARGE_SESSION_WORKING_STATUS_MESSAGE_INTERVAL_MS,
 		);
@@ -3180,7 +3151,7 @@ export class InteractiveMode {
 		if (this.workingIndicatorOptions !== undefined) {
 			return this.workingIndicatorOptions;
 		}
-		const sessionEntryCount = this.sessionManager.getEntries().length;
+		const sessionEntryCount = this.sessionManager.getEntryCount();
 		return {
 			frames: theme.getColorMode() === "truecolor" ? ["•"] : [theme.fg("accent", "•"), theme.fg("muted", "◦")],
 			intervalMs: largeSessionWorkingStatusInterval(
@@ -3221,8 +3192,16 @@ export class InteractiveMode {
 		this.activeStatusIndicator?.dispose();
 		this.activeStatusIndicator = indicator;
 		this.statusContainer.clear();
+		const embedded = embedStatusIndicatorInEditor(this.defaultEditor, this.editor, indicator);
+		this.activeWorkingIndicatorEmbedded = embedded;
 
+		// The spinner lives in the editor border when the editor opts in; the status row
+		// then only carries the optional working tip instead of a second spinner line.
 		const workingTip = indicator.kind === "working" ? this.resolveTurnWorkingTip() : undefined;
+		if (embedded) {
+			if (workingTip) appendTipLine(this.statusContainer, theme.fg("dim", workingTip.line));
+			return;
+		}
 		if (!workingTip) {
 			this.statusContainer.addChild(indicator);
 			return;
@@ -3230,7 +3209,7 @@ export class InteractiveMode {
 
 		const wrapper = new Container();
 		wrapper.addChild(indicator);
-		wrapper.addChild(new Text(theme.fg("dim", workingTip.line), 1, 0));
+		appendTipLine(wrapper, theme.fg("dim", workingTip.line));
 		this.statusContainer.addChild(wrapper);
 	}
 
@@ -3262,6 +3241,7 @@ export class InteractiveMode {
 		}
 		const hadActiveStatusIndicator = this.activeStatusIndicator !== undefined;
 		const isClearingWorking = this.activeStatusIndicator?.kind === "working";
+		const clearedIndicatorWasEmbedded = this.activeWorkingIndicatorEmbedded;
 		const shouldReserveHeight =
 			hadActiveStatusIndicator && this.options.tuiMode === "regular" && this.ui.getClearOnShrink();
 		const renderedHeight = shouldReserveHeight ? this.statusContainer.render(this.ui.terminal.columns).length : 0;
@@ -3270,8 +3250,12 @@ export class InteractiveMode {
 		if (isClearingWorking) {
 			this.workingStartedAt = undefined;
 		}
+		this.activeWorkingIndicatorEmbedded = false;
 		this.statusContainer.clear();
-		if (shouldReserveHeight) {
+		embedStatusIndicatorInEditor(this.defaultEditor, this.editor, undefined);
+		// An embedded spinner occupied no status row, so only a rendered tip line is worth
+		// reserving; otherwise the placeholder would add rows that were never on screen.
+		if (shouldReserveHeight && (!clearedIndicatorWasEmbedded || renderedHeight > 0)) {
 			const idleHeight = Math.min(this.ui.terminal.rows, Math.max(1, renderedHeight || 2));
 			this.idleStatus.setHeight(idleHeight);
 			this.statusContainer.addChild(this.idleStatus);
@@ -3279,11 +3263,16 @@ export class InteractiveMode {
 	}
 
 	private showWorkingStatusIndicator(): void {
+		const colorFn = isWorkingStatusEditor(this.editor)
+			? (text: string) =>
+					(this.editor.borderColor ?? theme.getThinkingBorderColor(this.session.thinkingLevel || "off"))(text)
+			: undefined;
 		this.showStatusIndicator(
 			new WorkingStatusIndicator(
 				this.ui,
 				this.workingMessage ?? this.defaultWorkingMessage,
 				this.getWorkingIndicatorOptions(),
+				colorFn,
 			),
 		);
 	}
@@ -3409,11 +3398,13 @@ export class InteractiveMode {
 		if (this.askUserQuestion) {
 			this.hideQuestionOverlay();
 		}
-		this.asyncQuestion?.finish({
-			status: "cancelled",
-			answers: {},
-			unanswered: this.asyncQuestion.request.questions.map((question) => question.id),
-		});
+		for (const state of this.pendingQuestions.values()) {
+			state.finish({
+				status: "cancelled",
+				answers: {},
+				unanswered: state.request.questions.map((question) => question.id),
+			});
+		}
 		this.ui.hideOverlay();
 		this.clearExtensionTerminalInputListeners();
 		this.setExtensionFooter(undefined);
@@ -3591,9 +3582,18 @@ export class InteractiveMode {
 
 	private createExtensionUIContext(): ExtensionUIContext {
 		return {
-			select: (title, options, opts) => this.showExtensionSelector(title, options, opts),
-			confirm: (title, message, opts) => this.showExtensionConfirm(title, message, opts),
-			input: (title, placeholder, opts) => this.showExtensionInput(title, placeholder, opts),
+			select: (title, options, opts) =>
+				this.withBlockedHostDialog(crypto.randomUUID(), title, () =>
+					this.showExtensionSelector(title, options, opts),
+				),
+			confirm: (title, message, opts) =>
+				this.withBlockedHostDialog(crypto.randomUUID(), title, () =>
+					this.showExtensionConfirm(title, message, opts),
+				),
+			input: (title, placeholder, opts) =>
+				this.withBlockedHostDialog(crypto.randomUUID(), title, () =>
+					this.showExtensionInput(title, placeholder, opts),
+				),
 			// Async answers are delivered by the ask-user extension, not here: the
 			// widget only resolves the question, so the model sees exactly one
 			// framed user message no matter which surface answered.
@@ -3624,7 +3624,8 @@ export class InteractiveMode {
 			pasteToEditor: (text) => this.editor.handleInput(`\x1b[200~${text}\x1b[201~`),
 			setEditorText: (text) => this.editor.setText(text),
 			getEditorText: () => this.getExpandedEditorText(),
-			editor: (title, prefill) => this.showExtensionEditor(title, prefill),
+			editor: (title, prefill) =>
+				this.withBlockedHostDialog(crypto.randomUUID(), title, () => this.showExtensionEditor(title, prefill)),
 			addAutocompleteProvider: (factory) => {
 				this.autocompleteProviderWrappers.push(factory);
 				this.setupAutocompleteProvider();
@@ -3843,6 +3844,8 @@ export class InteractiveMode {
 				opts?.signal?.removeEventListener("abort", onAbort);
 				this.workingMessage = previousWorkingMessage;
 				this.updateWorkingIndicatorMessage();
+				this.blockingQuestionHeader = undefined;
+				this.applyTerminalTitle();
 				this.hideQuestionOverlay();
 				resolve(response);
 			};
@@ -3863,16 +3866,22 @@ export class InteractiveMode {
 			}
 			opts?.signal?.addEventListener("abort", onAbort, { once: true });
 
+			this.blockingQuestionHeader = request.questions[0]?.header;
+			this.applyTerminalTitle();
+			if (opts?.notifyArrival !== false && this.settingsManager.getAskUserSettings().bell)
+				this.ui.terminal.write("\x07");
 			this.workingMessage = "Waiting for your answer";
 			this.updateWorkingIndicatorMessage();
 			this.askUserQuestion = new AskUserQuestionComponent(request, (response) => finish(response), {
 				tui: this.ui,
 				timeoutMs: opts?.timeout ?? request.timeoutMs,
+				getDeadlineAtMs: opts?.getDeadlineAtMs,
 				onProgress: opts?.onProgress,
 			});
 			this.disposeActiveSelector();
 			this.editorContainer.clear();
 			this.editorContainer.addChild(this.askUserQuestion);
+			this.syncQuestionMouseCapture();
 			this.ui.setFocus(this.askUserQuestion);
 			this.ui.requestRender();
 		});
@@ -3884,84 +3893,262 @@ export class InteractiveMode {
 	private hideQuestionOverlay(): void {
 		this.askUserQuestion?.dispose();
 		this.askUserQuestion = undefined;
+		this.syncQuestionMouseCapture();
+		this.questionSurface = "collapsed";
 		this.editorContainer.clear();
 		this.editorContainer.addChild(this.editor);
 		this.ui.setFocus(this.editor);
 		this.ui.requestRender();
 	}
 
-	/**
-	 * Park a waitForAnswer=false question behind a one-line widget above the
-	 * editor. The turn keeps running; the promise settles when the user submits
-	 * from the expanded component, types an ordinary reply (comment), the idle
-	 * countdown expires, or the caller aborts. A newer async question supersedes
-	 * a pending one, which resolves as cancelled.
-	 */
+	/** Queue an async request without replacing another request or taking editor focus. */
 	private showAsyncQuestion(request: QuestionRequest, opts?: QuestionOverlayOptions): Promise<QuestionResponse> {
-		return new Promise((resolve) => {
-			const cancelled = (): QuestionResponse => ({
+		const existing = this.pendingQuestions.get(request.requestId);
+		if (existing) return existing.completion;
+		const cancelled = (): QuestionResponse => ({
+			status: "cancelled",
+			answers: {},
+			unanswered: request.questions.map((question) => question.id),
+		});
+		if (opts?.signal?.aborted) return Promise.resolve(cancelled());
+		const completion = Promise.withResolvers<QuestionResponse>();
+		const onAbort = () => state.finish(cancelled());
+		const state: AsyncQuestionState = {
+			request,
+			timeoutMs: opts?.timeout ?? request.timeoutMs,
+			askedAtMs: Date.now(),
+			completion: completion.promise,
+			getDeadlineAtMs: opts?.getDeadlineAtMs,
+			onProgress: opts?.onProgress,
+			draft: { answers: {} },
+			finish: (response) => {
+				if (this.pendingQuestions.get(request.requestId) !== state) return;
+				this.pendingQuestions.delete(request.requestId);
+				this.pendingOrder = this.pendingOrder.filter((id) => id !== request.requestId);
+				opts?.signal?.removeEventListener("abort", onAbort);
+				if (
+					this.composerDestination.kind === "answer" &&
+					this.composerDestination.requestId === request.requestId
+				) {
+					this.setComposerReply();
+					if (this.editor.getText() !== "") this.showStatus("That question is no longer pending");
+				}
+				if (this.pendingOrder.length === 0 && this.questionSurface === "list") {
+					this.ui.hideOverlay();
+					this.questionSurface = "collapsed";
+				}
+				if (this.shownQuestionId === request.requestId) {
+					if (this.questionSurface === "expanded") this.hideQuestionOverlay();
+					this.shownQuestionId = this.pendingOrder[0];
+				}
+				this.refreshAsyncWidget();
+				completion.resolve(response);
+			},
+		};
+		this.pendingQuestions.set(request.requestId, state);
+		this.pendingOrder.push(request.requestId);
+		this.shownQuestionId ??= request.requestId;
+		if (opts?.notifyArrival !== false && this.settingsManager.getAskUserSettings().bell)
+			this.ui.terminal.write("\x07");
+		opts?.signal?.addEventListener("abort", onAbort, { once: true });
+		this.refreshAsyncWidget();
+		return completion.promise;
+	}
+
+	/** Only the visible surface ticks; extension deadlines remain authoritative. */
+	private refreshAsyncWidget(): void {
+		this.syncQuestionMouseCapture();
+		this.applyTerminalTitle();
+		const state = this.shownQuestion;
+		if (!state || this.questionSurface === "expanded") {
+			this.setExtensionWidget(ASK_USER_WIDGET_KEY, undefined);
+			return;
+		}
+		this.setExtensionWidget(
+			ASK_USER_WIDGET_KEY,
+			(tui) =>
+				new AskUserAsyncWidget({
+					request: state.request,
+					draft: state.draft,
+					timeoutMs: state.timeoutMs,
+					getDeadlineAtMs: state.getDeadlineAtMs,
+					pendingCount: this.pendingOrder.length,
+					tui,
+					mouseCaptureActive: this.terminalMouseMode !== "off",
+					onExpandClick: () => this.expandPendingQuestion(state.request.requestId),
+					onNextQuestion: () => this.cyclePendingQuestion(),
+					onOptionClick: (index) => this.clickPendingQuestion(state, index),
+					onOwnAnswerClick: () => this.clickPendingQuestion(state, "own-answer"),
+					onExpire: () =>
+						state.finish(buildTimedOutResponse(state.request, state.draft, Date.now() - state.askedAtMs)),
+				}),
+		);
+	}
+
+	private cyclePendingQuestion(): void {
+		if (this.pendingOrder.length < 2) return;
+		const index = this.pendingOrder.indexOf(this.shownQuestionId!);
+		this.shownQuestionId = this.pendingOrder[(index + 1) % this.pendingOrder.length];
+		this.refreshAsyncWidget();
+	}
+
+	private clickPendingQuestion(state: AsyncQuestionState, option: number | "own-answer"): void {
+		const unanswered = unansweredIds(state.request, state.draft);
+		const index = state.request.questions.findIndex((question) => question.id === unanswered[0]);
+		if (!this.expandPendingQuestion(state.request.requestId, index)) return;
+		if (option === "own-answer") this.askUserQuestion!.openOwnAnswer();
+		else this.askUserQuestion!.clickOption(option, true);
+	}
+
+	/** Intercept question chords and first typed input before the editor inserts it. */
+	private handleAskUserShortcut(data: string): boolean {
+		const state = this.shownQuestion;
+		if (
+			!state ||
+			this.askUserQuestion ||
+			this.ui.hasOverlay() ||
+			this.extensionSelector ||
+			this.extensionInput ||
+			this.extensionEditor
+		)
+			return false;
+		if (matchesAskUserAnswerKey(data)) return this.expandPendingQuestion();
+		if (
+			this.editor.getText() !== "" ||
+			this.ui.getFocusedComponent() !== this.editor ||
+			this.defaultEditor.isShowingAutocomplete()
+		)
+			return false;
+		if (this.keybindings.matches(data, "app.question.next")) {
+			if (this.pendingOrder.length < 2) return false;
+			this.cyclePendingQuestion();
+			return true;
+		}
+		const unanswered = unansweredIds(state.request, state.draft);
+		const questionIndex = state.request.questions.findIndex((question) => question.id === unanswered[0]);
+		const question = state.request.questions[questionIndex];
+		if (/^[1-9]$/.test(data) && question?.options[Number(data) - 1]) {
+			this.expandPendingQuestion(state.request.requestId, questionIndex, data);
+			return true;
+		}
+		const printable = decodeKittyPrintable(data) ?? data;
+		if (
+			data.startsWith("\x1b[200~") ||
+			(printable !== "" && !/[\x00-\x1f\x7f]/.test(printable) && !/^[/!]/.test(printable))
+		) {
+			this.setComposerReply(state.request.requestId);
+		}
+		return false;
+	}
+
+	private setComposerReply(requestId?: string): void {
+		this.composerDestination = requestId === undefined ? { kind: "chat" } : { kind: "answer", requestId };
+		const state = requestId === undefined ? undefined : this.pendingQuestions.get(requestId);
+		this.defaultEditor.setReplyLabel(
+			state
+				? theme.fg(
+						"muted",
+						`↳ reply to ${state.request.questions[0].header} · ${keyText("app.message.followUp")} sends as message`,
+					)
+				: undefined,
+		);
+		this.ui.requestRender();
+	}
+
+	private async handleAnswerCommand(argument: string): Promise<void> {
+		const state = this.shownQuestion;
+		if (!state) {
+			this.showStatus("No question is pending.");
+			return;
+		}
+		if (argument === "skip") {
+			const response: QuestionResponse = {
 				status: "cancelled",
-				answers: {},
-				unanswered: request.questions.map((question) => question.id),
-			});
-			if (opts?.signal?.aborted) {
-				resolve(cancelled());
+				answers: state.draft.answers ?? {},
+				unanswered: unansweredIds(state.request, state.draft),
+			};
+			state.finish(response);
+			await state.completion;
+			this.showStatus("The user dismissed the question.");
+			// Ordinary cancellation/abort stays silent in the builtin. Only this
+			// explicit command acknowledges dismissal, including on host bridges.
+			await this.session.sendUserMessage(
+				formatUserMessage(response, state.request.requestId, state.request.questions),
+				{
+					deliverAs: this.session.isStreaming ? "steer" : "followUp",
+				},
+			);
+			return;
+		}
+		if (argument !== "") {
+			const id = /^[1-9]\d*$/.test(argument) ? this.pendingOrder[Number(argument) - 1] : undefined;
+			if (id === undefined) {
+				this.showStatus("Choose a pending question number or /answer skip.");
 				return;
 			}
-			this.asyncQuestion?.finish(cancelled());
-			const onAbort = () => state.finish(cancelled());
-			const state: AsyncQuestionState = {
-				request,
-				timeoutMs: opts?.timeout ?? request.timeoutMs,
-				onProgress: opts?.onProgress,
-				draft: { answers: {} },
-				finish: (response) => {
-					if (this.asyncQuestion !== state) return;
-					this.asyncQuestion = undefined;
-					opts?.signal?.removeEventListener("abort", onAbort);
-					if (this.askUserQuestion) this.hideQuestionOverlay();
-					this.setExtensionWidget(ASK_USER_WIDGET_KEY, undefined);
-					resolve(response);
-				},
-			};
-			this.asyncQuestion = state;
-			opts?.signal?.addEventListener("abort", onAbort, { once: true });
-			this.refreshAsyncWidget(state);
-		});
+			this.expandPendingQuestion(id);
+			return;
+		}
+		if (this.pendingOrder.length === 1) {
+			this.expandPendingQuestion();
+			return;
+		}
+		const list = new SelectList(
+			this.pendingOrder.map((id) => {
+				const pending = this.pendingQuestions.get(id)!;
+				const remaining = (pending.getDeadlineAtMs?.() ?? pending.askedAtMs + pending.timeoutMs) - Date.now();
+				return {
+					value: id,
+					label: `${pending.request.questions[0].header} · ${formatCountdownLabel(Date.now() - pending.askedAtMs)} ago · ${formatCountdownLabel(remaining)} remaining`,
+				};
+			}),
+			10,
+			getSelectListTheme(),
+		);
+		const close = () => {
+			this.ui.hideOverlay();
+			this.questionSurface = "collapsed";
+		};
+		list.onCancel = close;
+		list.onSelect = ({ value }) => {
+			close();
+			this.expandPendingQuestion(value);
+		};
+		this.questionSurface = "list";
+		this.ui.showOverlay(list, { width: "80%", anchor: "bottom-center" });
 	}
 
-	/** (Re)render the collapsed widget with a fresh idle countdown. */
-	private refreshAsyncWidget(state: AsyncQuestionState): void {
-		this.setExtensionWidget(ASK_USER_WIDGET_KEY, (tui) => {
-			const startedAt = Date.now();
-			return new AskUserAsyncWidget({
-				unanswered: unansweredIds(state.request, state.draft).length,
-				timeoutMs: state.timeoutMs,
-				tui,
-				onExpire: () => state.finish(buildTimedOutResponse(state.request, state.draft, Date.now() - startedAt)),
-			});
-		});
-	}
-
-	/** Editor shortcut: expand the pending async question into the full component. */
-	private handleAskUserShortcut(data: string): boolean {
-		const state = this.asyncQuestion;
-		if (!state || this.askUserQuestion || !matchesKey(data, ASK_USER_ANSWER_KEY)) return false;
+	/**
+	 * Key-free entry into the pending async question (empty Enter, /answer):
+	 * mounts the full component in place of the editor. Returns false when
+	 * nothing is pending or the component is already open.
+	 */
+	private expandPendingQuestion(
+		requestId = this.shownQuestionId,
+		initialQuestionIndex?: number,
+		initialInput?: string,
+	): boolean {
+		const state = requestId === undefined ? undefined : this.pendingQuestions.get(requestId);
+		if (!state || this.askUserQuestion) return false;
+		this.shownQuestionId = state.request.requestId;
 		const component = new AskUserQuestionComponent(
 			state.request,
 			(response) => {
-				if (this.asyncQuestion !== state) return;
+				if (this.pendingQuestions.get(state.request.requestId) !== state) return;
 				if (response.status !== "cancelled") {
 					state.finish(response);
 					return;
 				}
 				// Esc collapses back to the widget; the question stays pending.
 				this.hideQuestionOverlay();
-				this.refreshAsyncWidget(state);
+				this.refreshAsyncWidget();
 			},
 			{
 				tui: this.ui,
 				timeoutMs: state.timeoutMs,
+				getDeadlineAtMs: state.getDeadlineAtMs,
+				initialDraft: state.draft,
+				initialQuestionIndex,
 				onProgress: (draft) => {
 					state.draft = draft;
 					state.onProgress?.(draft);
@@ -3969,11 +4156,14 @@ export class InteractiveMode {
 			},
 		);
 		this.askUserQuestion = component;
+		this.questionSurface = "expanded";
+		this.refreshAsyncWidget();
 		this.disposeActiveSelector();
 		this.editorContainer.clear();
 		this.editorContainer.addChild(component);
 		this.ui.setFocus(component);
 		this.ui.requestRender();
+		if (initialInput !== undefined) component.handleInput(initialInput);
 		return true;
 	}
 
@@ -3983,8 +4173,10 @@ export class InteractiveMode {
 	 * the raw text. Returns false when nothing is pending.
 	 */
 	private submitAsyncQuestionComment(text: string): boolean {
-		const state = this.asyncQuestion;
+		const destination = this.composerDestination;
+		const state = destination.kind === "answer" ? this.pendingQuestions.get(destination.requestId) : undefined;
 		if (!state) return false;
+		this.setComposerReply();
 		this.editor.addToHistory?.(text);
 		this.editor.setText("");
 		state.finish(buildCommentResponse(state.request, state.draft, text));
@@ -4104,6 +4296,17 @@ export class InteractiveMode {
 		}
 
 		this.editorContainer.addChild(this.editor as Component);
+		if (this.activeStatusIndicator) {
+			this.statusContainer.clear();
+			this.activeWorkingIndicatorEmbedded = embedStatusIndicatorInEditor(
+				this.defaultEditor,
+				this.editor,
+				this.activeStatusIndicator,
+			);
+			if (!this.activeWorkingIndicatorEmbedded) {
+				this.statusContainer.addChild(this.activeStatusIndicator);
+			}
+		}
 		this.ui.setFocus(this.editor as Component);
 		this.ui.requestRender();
 	}
@@ -4308,6 +4511,7 @@ export class InteractiveMode {
 				),
 		);
 		this.defaultEditor.onAction("app.session.resume", () => this.showSessionSelector());
+		this.defaultEditor.onAction("app.session.renameCurrent", () => this.showSessionRenameInput());
 
 		this.defaultEditor.onChange = (text: string) => {
 			const wasBashMode = this.isBashMode;
@@ -4375,11 +4579,15 @@ export class InteractiveMode {
 			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			this.getSessionLogger().warn("clipboard_error", {
+			// `?.` guards keep this handler callable on a minimal borrowed receiver
+			// ({ editor, ui }) - the contract upstream's clipboard tests pin; a full
+			// InteractiveMode instance still logs to the session log and shows the
+			// status line.
+			this.getSessionLogger?.().warn("clipboard_error", {
 				op: "paste",
 				error: message,
 			});
-			this.showStatus(`Clipboard paste failed: ${sanitizeTuiErrorMessage(message)}`);
+			this.showStatus?.(`Clipboard paste failed: ${sanitizeTuiErrorMessage(message)}`);
 		}
 	}
 
@@ -4507,17 +4715,15 @@ export class InteractiveMode {
 				this.hideShortcutOverlay();
 				this.lastEditorText = "";
 				text = text.trim();
-				if (!text) return;
-
-				// A pending async question claims ordinary text as its comment answer;
-				// slash and bash commands keep their normal routing.
-				if (
-					!text.startsWith("/") &&
-					!text.startsWith("!") &&
-					this.asyncQuestion &&
-					this.submitAsyncQuestionComment(text)
-				)
+				if (!text) {
+					// Enter on an empty editor opens the pending async question; it needs
+					// no chord, so it works under every terminal and keymap.
+					this.expandPendingQuestion();
 					return;
+				}
+
+				// Only an explicitly bound reply claims ordinary text; pre-arrival drafts and history stay chat.
+				if (!text.startsWith("/") && !text.startsWith("!") && this.submitAsyncQuestionComment(text)) return;
 
 				// Handle commands
 				if (text === "/settings") {
@@ -4561,8 +4767,8 @@ export class InteractiveMode {
 					this.editor.setText("");
 					return;
 				}
-				if (text === "/name" || text.startsWith("/name ")) {
-					await this.handleNameCommand(text);
+				if (text === "/rename" || text.startsWith("/rename ") || text === "/name" || text.startsWith("/name ")) {
+					await this.handleRenameCommand(text);
 					this.editor.setText("");
 					return;
 				}
@@ -4579,6 +4785,11 @@ export class InteractiveMode {
 				if (text === "/keybindings") {
 					this.editor.setText("");
 					await this.handleKeybindingsCommand();
+					return;
+				}
+				if (text === "/answer" || text.startsWith("/answer ")) {
+					this.editor.setText("");
+					await this.handleAnswerCommand(text.slice("/answer".length).trim());
 					return;
 				}
 				if (text === "/hotkeys") {
@@ -4659,15 +4870,13 @@ export class InteractiveMode {
 					return;
 				}
 				if (this.isExtensionCommand(text)) {
+					// No optimistic echo: the command runs inside AgentSession.prompt() and
+					// never becomes a canonical user message, so the bubble would only sit
+					// next to the command's own UI (e.g. the /btw panel) until the handler
+					// resolved, then vanish. Matches handleFollowUp's command dispatch.
 					this.editor.addToHistory?.(text);
 					this.editor.setText("");
-					const pendingEchoId = this.optimisticUserEchoes.begin(text);
-					try {
-						await this.session.prompt(text, this.optimisticUserEchoes.promptOptions(pendingEchoId));
-					} catch (error) {
-						this.optimisticUserEchoes.reject(pendingEchoId);
-						throw error;
-					}
+					await this.session.prompt(text);
 					return;
 				}
 
@@ -4702,13 +4911,7 @@ export class InteractiveMode {
 					if (this.isExtensionCommand(text)) {
 						this.editor.addToHistory?.(text);
 						this.editor.setText("");
-						const pendingEchoId = this.optimisticUserEchoes.begin(text);
-						try {
-							await this.session.prompt(text, this.optimisticUserEchoes.promptOptions(pendingEchoId));
-						} catch (error) {
-							this.optimisticUserEchoes.reject(pendingEchoId);
-							throw error;
-						}
+						await this.session.prompt(text);
 					} else {
 						this.queueCompactionSubmission(text, "steer");
 					}
@@ -5425,7 +5628,7 @@ export class InteractiveMode {
 
 	private showRetryStatusIndicatorWithCadence(event: { attempt: number; maxAttempts: number; delayMs: number }): void {
 		const refreshIntervalMs = largeSessionWorkingStatusInterval(
-			this.sessionManager.getEntries().length,
+			this.sessionManager.getEntryCount(),
 			DEFAULT_RETRY_STATUS_REFRESH_INTERVAL_MS,
 			LARGE_SESSION_RETRY_STATUS_REFRESH_INTERVAL_MS,
 		);
@@ -5620,11 +5823,13 @@ export class InteractiveMode {
 							this.chatContainer.addChild(userComponent);
 						}
 					} else {
+						const answer = parseAskUserAnswerFrame(textContent);
 						const userComponent = new UserMessageComponent(
 							textContent,
 							this.getMarkdownThemeWithSettings(),
 							this.outputPad,
 							this.getMarkdownTransformers(),
+							answer ? getAskUserAnswerHeaders(this.sessionManager.getBranch(), answer.requestId) : undefined,
 						);
 						this.chatContainer.addChild(userComponent);
 					}
@@ -6168,6 +6373,7 @@ export class InteractiveMode {
 			killTrackedDetachedChildren();
 		} catch {}
 		try {
+			this.pauseQuestionMouseCapture();
 			this.ui.stop();
 		} catch {}
 		// Record the crash before the terminal handoff: the banner below only reaches
@@ -6292,12 +6498,14 @@ export class InteractiveMode {
 			process.removeListener("SIGINT", ignoreSigint);
 			takeOverInteractiveStderr();
 			this.ui.start();
+			this.resumeQuestionMouseCapture();
 			this.ui.requestRender(true);
 		});
 
 		try {
 			// Stop the TUI (restore terminal to normal mode)
 			restoreInteractiveStderr();
+			this.pauseQuestionMouseCapture();
 			this.ui.stop();
 
 			// Send SIGTSTP to process group (pid=0 means all processes in group)
@@ -6310,6 +6518,7 @@ export class InteractiveMode {
 	}
 
 	private async handleFollowUp(): Promise<void> {
+		this.setComposerReply();
 		const text = this.getExpandedEditorText().trim();
 		if (!text) return;
 
@@ -6340,13 +6549,18 @@ export class InteractiveMode {
 		const images = this.takeSubmissionImages(text);
 
 		// Alt+Enter queues a follow-up message (waits until agent finishes).
-		// Extension commands never reach this branch: the compaction branch above
-		// dispatches them while compacting, and otherwise prompt() runs them
-		// immediately. The followUp behavior here applies only to ordinary text,
-		// prompt template expansion, and queueing.
+		// Extension commands are dispatched without an optimistic echo here too,
+		// mirroring the Enter path: the command runs inside AgentSession.prompt()
+		// immediately and renders its own UI (e.g. the /btw panel), so an echo
+		// bubble would duplicate it. The followUp echo applies only to ordinary
+		// text, prompt template expansion, and queueing.
 		if (this.session.isStreaming) {
 			this.editor.addToHistory?.(text);
 			this.editor.setText("");
+			if (this.isExtensionCommand(text)) {
+				await this.session.prompt(text);
+				return;
+			}
 			const pendingEchoId = this.beginUserEcho(text, images);
 			try {
 				await this.session.prompt(text, {
@@ -6394,6 +6608,7 @@ export class InteractiveMode {
 			const level = this.session.thinkingLevel || "off";
 			this.editor.borderColor = theme.getThinkingBorderColor(level);
 		}
+		this.activeStatusIndicator?.invalidate();
 		this.ui.requestRender();
 	}
 
@@ -6489,6 +6704,7 @@ export class InteractiveMode {
 	private async handleOpenExternalEditor(): Promise<void> {
 		const editorCmd = this.settingsManager.getExternalEditorCommand();
 		const content = this.getExpandedEditorText();
+		this.pauseQuestionMouseCapture();
 		this.ui.stop();
 		restoreInteractiveStderr();
 		try {
@@ -6502,6 +6718,7 @@ export class InteractiveMode {
 		} finally {
 			takeOverInteractiveStderr();
 			this.ui.start();
+			this.resumeQuestionMouseCapture();
 			this.ui.requestRender(true);
 		}
 	}
@@ -7009,6 +7226,7 @@ export class InteractiveMode {
 					fullscreenExitOutput: this.settingsManager.getFullscreenExitOutput(),
 					fullscreenScrollbar: this.settingsManager.getFullscreenScrollbar(),
 					fullscreenCopyOnSelect: this.settingsManager.getFullscreenCopyOnSelect?.() ?? true,
+					terminalMouse: this.settingsManager.getTerminalMouse(),
 					warnings: this.settingsManager.getWarnings(),
 				},
 				{
@@ -7183,6 +7401,16 @@ export class InteractiveMode {
 					},
 					onShowTerminalProgressChange: (enabled) => {
 						this.settingsManager.setShowTerminalProgress(enabled);
+					},
+					onTerminalMouseChange: (mode) => {
+						if (this.renderer.hasOverlayEntries) {
+							selector?.getSettingsList().updateValue("terminal-mouse", this.terminalMouseMode);
+							this.showStatus("Close active overlays before changing mouse capture");
+							return;
+						}
+						this.settingsManager.setTerminalMouse(mode);
+						this.switchTuiMode(this.renderer.mode, true, true, true);
+						this.refreshAsyncWidget();
 					},
 					onTuiModeChange: (mode) => {
 						if (!this.switchTuiMode(mode)) {
@@ -7873,6 +8101,14 @@ export class InteractiveMode {
 			await this.session.abort();
 		}
 
+		// Recheck after the dialogs and streaming abort, before replacing another operation's UI.
+		if (this.session.isCompacting) {
+			this.showError(
+				"Wait for the current compaction or tree navigation to finish before navigating the session tree.",
+			);
+			return;
+		}
+
 		// Set up escape handler and status indicator if summarizing
 		let showingSummaryIndicator = false;
 		const originalOnEscape = this.defaultEditor.onEscape;
@@ -8256,70 +8492,92 @@ export class InteractiveMode {
 	): Promise<void> {
 		const actionLabel = authType === "oauth" ? `Logged in to ${providerName}` : `Saved API key for ${providerName}`;
 
-		let selectedModel: Model<any> | undefined;
-		let systemPromptName: string | undefined;
-		let selectionError: string | undefined;
-		if (isUnknownModel(previousModel)) {
-			const availableModels = this.session.modelRuntime.getAvailableSnapshot();
-			const providerModels = availableModels.filter((model) => model.provider === providerId);
-			// Matches LLAMA_PROVIDER_ID from extensions/llama/provider.ts; kept inline to avoid coupling interactive mode to the built-in extension.
-			if (providerId === "llama.cpp") {
-				selectionError = llamaCppPostLoginGuidance(actionLabel, providerModels.length);
-			} else if (!hasDefaultModelProvider(providerId)) {
-				selectionError = `${actionLabel}, but no default model is configured for provider "${providerId}". Use /model to select a model.`;
-			} else if (providerModels.length === 0) {
-				selectionError = `${actionLabel}, but no models are available for that provider. Use /model to select a model.`;
-			} else {
-				const defaultModelId = defaultModelPerProvider[providerId];
-				selectedModel = providerModels.find((model) => model.id === defaultModelId);
-				if (!selectedModel) {
-					selectionError = `${actionLabel}, but its default model "${defaultModelId}" is not available. Use /model to select a model.`;
+		const session = this.session;
+		// Dynamic catalogs may be empty until the first authenticated network refresh.
+		const deferSelection =
+			isUnknownModel(previousModel) &&
+			hasDefaultModelProvider(providerId) &&
+			!session.modelRuntime
+				.getAvailableSnapshot()
+				.some((model) => model.provider === providerId && model.id === defaultModelPerProvider[providerId]);
+		const finishAuthentication = async () => {
+			let selectedModel: Model<any> | undefined;
+			let systemPromptName: string | undefined;
+			let selectionError: string | undefined;
+			if (isUnknownModel(previousModel)) {
+				const availableModels = this.session.modelRuntime.getAvailableSnapshot();
+				const providerModels = availableModels.filter((model) => model.provider === providerId);
+				// Matches LLAMA_PROVIDER_ID from extensions/llama/provider.ts; kept inline to avoid coupling interactive mode to the built-in extension.
+				if (providerId === "llama.cpp") {
+					selectionError = llamaCppPostLoginGuidance(actionLabel, providerModels.length);
+				} else if (!hasDefaultModelProvider(providerId)) {
+					selectionError = `${actionLabel}, but no default model is configured for provider "${providerId}". Use /model to select a model.`;
+				} else if (providerModels.length === 0) {
+					selectionError = `${actionLabel}, but no models are available for that provider. Use /model to select a model.`;
 				} else {
-					try {
-						systemPromptName = (await this.session.setModel(selectedModel))?.systemPromptName;
-					} catch (error: unknown) {
-						selectedModel = undefined;
-						const errorMessage = error instanceof Error ? error.message : String(error);
-						selectionError = `${actionLabel}, but selecting its default model failed: ${errorMessage}. Use /model to select a model.`;
+					const defaultModelId = defaultModelPerProvider[providerId];
+					// Radius catalogs vary by account; prefer balanced, then use catalog order.
+					selectedModel =
+						providerModels.find((model) => model.id === defaultModelId) ??
+						(providerId === "radius" ? providerModels[0] : undefined);
+					if (!selectedModel) {
+						selectionError = `${actionLabel}, but its default model "${defaultModelId}" is not available. Use /model to select a model.`;
+					} else {
+						try {
+							systemPromptName = (await this.session.setModel(selectedModel))?.systemPromptName;
+						} catch (error: unknown) {
+							selectedModel = undefined;
+							const errorMessage = error instanceof Error ? error.message : String(error);
+							selectionError = `${actionLabel}, but selecting its default model failed: ${errorMessage}. Use /model to select a model.`;
+						}
 					}
 				}
 			}
-		}
 
-		this.updateAvailableProviderCount();
-		this.footer.invalidate();
-		this.updateEditorBorderColor();
-		if (selectedModel) {
-			const systemPromptStr = systemPromptName ? ` System prompt: ${systemPromptName}.` : "";
-			this.showStatus(
-				`${actionLabel}. Selected ${selectedModel.id}.${systemPromptStr} Credentials saved to ${getAuthPath()}`,
-			);
-			this.showRiskyMainModelWarning(selectedModel);
-			void this.maybeWarnAboutAnthropicSubscriptionAuth(selectedModel);
-			this.checkDaxnutsEasterEgg(selectedModel);
-		} else {
-			this.showStatus(`${actionLabel}. Credentials saved to ${getAuthPath()}`);
-			if (selectionError) {
-				this.showError(selectionError);
+			this.updateAvailableProviderCount();
+			this.footer.invalidate();
+			this.updateEditorBorderColor();
+			if (selectedModel) {
+				const systemPromptStr = systemPromptName ? ` System prompt: ${systemPromptName}.` : "";
+				this.showStatus(
+					`${actionLabel}. Selected ${selectedModel.id}.${systemPromptStr} Credentials saved to ${getAuthPath()}`,
+				);
+				this.showRiskyMainModelWarning(selectedModel);
+				void this.maybeWarnAboutAnthropicSubscriptionAuth(selectedModel);
+				this.checkDaxnutsEasterEgg(selectedModel);
 			} else {
-				void this.maybeWarnAboutAnthropicSubscriptionAuth();
+				this.showStatus(`${actionLabel}. Credentials saved to ${getAuthPath()}`);
+				if (selectionError) {
+					this.showError(selectionError);
+				} else {
+					void this.maybeWarnAboutAnthropicSubscriptionAuth();
+				}
 			}
+		};
+		if (deferSelection) {
+			this.showStatus(`${actionLabel}. Credentials saved to ${getAuthPath()}. Refreshing model catalog…`);
+		} else {
+			await finishAuthentication();
 		}
 
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), 15_000);
 		const refreshProviders = providerId === "cursor" ? [providerId, "cursor-cli-oauth"] : [providerId];
-		void this.session.modelRuntime
+		void session.modelRuntime
 			.refresh({
 				allowNetwork: true,
 				providers: refreshProviders,
 				signal: controller.signal,
 			})
-			.then((result) => {
+			.then(async (result) => {
 				if (result.aborted) {
 					this.showWarning(`${actionLabel}, but its model catalog refresh timed out; using cached models.`);
 				} else if (result.errors.size > 0) {
 					this.showWarning(`${actionLabel}, but its model catalog could not be refreshed; using cached models.`);
+				}
+				// Do not replace a model or session selected while the refresh was running.
+				if (deferSelection && this.session === session && session.model === previousModel) {
+					await finishAuthentication();
 				}
 				this.updateAvailableProviderCount();
 				this.footer.invalidate();
@@ -8861,20 +9119,18 @@ export class InteractiveMode {
 		}
 	}
 
-	private async handleNameCommand(text: string): Promise<void> {
-		const name = text.replace(/^\/name\s*/, "").trim();
+	/** `/rename [name]` and its `/name` alias: a bare command opens the inline editor. */
+	private async handleRenameCommand(text: string): Promise<void> {
+		const name = text.replace(/^\/(?:rename|name)\s*/, "").trim();
 		if (!name) {
-			const currentName = this.sessionManager.getSessionName();
-			if (currentName) {
-				this.chatContainer.addChild(new Spacer(1));
-				this.chatContainer.addChild(new Text(theme.fg("dim", `Session name: ${currentName}`), 1, 0));
-			} else {
-				this.showWarning("Usage: /name <name>");
-			}
-			this.ui.requestRender();
+			this.showSessionRenameInput();
 			return;
 		}
+		await this.applySessionName(name);
+	}
 
+	/** Store the display name and report the value the session kept. */
+	private async applySessionName(name: string): Promise<void> {
 		await this.session.setSessionName(name);
 		const sessionName = this.session.sessionName;
 		if (sessionName !== name) {
@@ -8883,6 +9139,34 @@ export class InteractiveMode {
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(theme.fg("dim", `Session name set: ${sessionName ?? name}`), 1, 0));
 		this.ui.requestRender();
+	}
+
+	/** Swap the composer for a single-line input prefilled with the current name. */
+	private showSessionRenameInput(): void {
+		this.extensionInput = new ExtensionInputComponent(
+			"Rename session",
+			undefined,
+			(value) => {
+				this.hideExtensionInput();
+				void this.commitSessionRename(value);
+			},
+			() => this.hideExtensionInput(),
+			{ tui: this.ui, initialValue: this.sessionManager.getSessionName() ?? "" },
+		);
+		this.editorContainer.clear();
+		this.editorContainer.addChild(this.extensionInput);
+		this.ui.setFocus(this.extensionInput);
+		this.ui.requestRender();
+	}
+
+	private async commitSessionRename(value: string): Promise<void> {
+		const name = value.trim();
+		if (!name) {
+			this.showWarning("Session name cannot be empty");
+			return;
+		}
+		if (name === this.sessionManager.getSessionName()) return;
+		await this.applySessionName(name);
 	}
 
 	private async handleSessionCommand(): Promise<void> {
@@ -9027,6 +9311,8 @@ export class InteractiveMode {
 		const copyMessage = this.getAppKeyDisplay("app.message.copy");
 		const followUp = this.getAppKeyDisplay("app.message.followUp");
 		const dequeue = this.getAppKeyDisplay("app.message.dequeue");
+		const answerQuestion = this.getAppKeyDisplay("app.question.answer");
+		const nextQuestion = this.getAppKeyDisplay("app.question.next");
 		const pasteImage = this.getAppKeyDisplay("app.clipboard.pasteImage");
 
 		let hotkeys = `
@@ -9071,6 +9357,8 @@ export class InteractiveMode {
 | \`${copyMessage}\` | Copy last assistant message |
 | \`${followUp}\` | Queue follow-up message |
 | \`${dequeue}\` | Restore queued messages |
+| \`${answerQuestion}\` | Open the pending question before dequeue (also: empty Enter; /answer lists requests) |
+| \`${nextQuestion}\` | Cycle pending questions from an empty composer |
 | \`${pasteImage}\` | Paste image or text from clipboard |
 | \`/\` | Slash commands |
 | \`!\` | Run bash command |

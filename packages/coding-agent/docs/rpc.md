@@ -205,6 +205,18 @@ session contents; isolates do not provide process-fatal OOM containment. The hos
   original opening spelling joins its already-bound owner without allocating a worker, even at capacity. An
   unknown path/alias still needs a preparation worker slot. In-process SDK registries using an injected runtime
   factory retain their existing behavior.
+- **Retained sessions**: a session opened with `open_session { retain_on_disconnect: true }` treats a client's
+  disconnect as a DETACH, not a close. The dropped connection's attachment is released immediately (no waiting for a
+  streaming turn, since nothing is being torn down), the entry stays `open` with `attachments: 0`, keeps running any
+  in-flight turn to settlement, keeps its path reservation and worker slot, and stays in `list_sessions`. A later
+  `open_session` with that `sessionPath` — from any connection — attaches to the same routing handle and returns
+  `attached: true`. Retention never outranks an explicit teardown: a `close_session` from an attached connection still
+  reaches zero attachments and closes the session, host shutdown closes it, and the idle-eviction window above still
+  parks it (the file reopens by path afterwards, like any evicted session). It is also bounded by the empty-host exit
+  and the supervisor's idle-exit window below: retention survives a client, not the host. Any attach may turn retention
+  on for a live session; no attach turns it off for clients that already rely on it. Omitting the flag is byte-identical
+  to the previous behavior — the session is closed with its last connection. Probe `retain_on_disconnect` in
+  `get_protocol_info` capabilities before relying on it: an older host silently ignores the field.
 - **Empty-host exit**: when the registry holds zero sessions AND no client is connected, continuously for
   `SENPI_RPC_HOST_EMPTY_EXIT_MS` (default 15 minutes), the host exits through its clean shutdown path (flush, socket
   removal), for stdio and `--listen` hosts alike. A connected client counts as occupancy even with no session open,
@@ -222,10 +234,17 @@ and only then constructs its session writer and runtime. A conflicting alias att
 explicitly before opening another writer.
 
 SessionManager writes, switches, forks, new sessions and imports obtain the same grant before writer creation or
-append-side normalization. Acquired paths are conservatively retained for that worker's entire lifetime, including
-superseded paths after a switch. Each worker may reserve at most 64 paths; an exhausted reservation budget fails
-explicitly. Close or an opening deadline requests worker termination, but does not release reservations or worker
-capacity until the actual exit event. A syscall that cannot yet be interrupted can therefore keep an entry
+append-side normalization. A grant is bound to a LIVE writer, not to the worker's lifetime: every snapshot a fully
+open worker publishes names the session files its live session writers still own, and the host releases each granted
+path that list (and the worker's current session path) no longer names. A session replaced by `new_session`,
+`switch_session`, a fork or an import therefore frees its previous file as soon as the replacement is published:
+another `open_session` for that superseded path opens its own worker instead of attaching or failing, and the
+previous opening spelling stops resolving to the replaced owner. Each worker may reserve at most 64 live paths
+at once; a request past that budget first reconciles against the latest snapshot and only then fails with
+`session_reservation_limit`, which is distinct from `session_path_in_use` (another owner holds the path). Only a
+fully open entry reconciles. An entry that is opening, closing or quarantined keeps every acquired path, because a
+worker stuck in a syscall can still be writing a path it can no longer report. Close or an opening deadline requests
+worker termination, but does not release reservations or worker capacity until the actual exit event. A syscall that cannot yet be interrupted can therefore keep an entry
 internally quarantined after the routing handle has closed. `list_sessions` continues to publish `closing`, not a
 new status: existing clients must not mistake a quarantined worker for a live reattach target. Retry the path only
 after that entry disappears.
@@ -237,15 +256,23 @@ by count and bytes without imposing a new timeout on long-running commands. The 
 window is a separate client-side wait: the host normally reports its earlier 30-second failure within that window,
 but a slow transport can delay delivery. Neither timeout proves worker exit or permits concurrent reopening.
 Display updates coalesce to one pending update and one latest value; UI cancellation and close have separate control
-messages. IPC output and snapshots are limited to 16 MiB per record, with one acknowledged record at a time. Credit
-returns after the session's destinations consume their output, not merely on IPC receipt. A five-second credit
+messages. IPC output and snapshots are limited to 16 MiB per record, with one acknowledged record at a time. Over a
+socket host, credit returns as soon as every destination of that session has ACCEPTED the record into its own bounded
+queue (64 MiB per connection), not when the peer's kernel has drained it: a client that is merely busy cannot withhold
+the producing worker's credit. On the shared stdio lane credit still waits for stdout backpressure. A five-second credit
 failure closes that session visibly (`session_error` followed by `session_closed`), rather than retaining an
-unbounded queue. Socket queues retain their existing independent overflow/disconnect behavior, and a socket peer that
-stops reading is cut before it can consume that credit budget: a write the peer has not accepted within 4 seconds
-(`DEFAULT_STALL_MS`, below the 5-second worker deadline) is treated like a byte overflow — that connection receives one
-`overflow` record with `error: "stalled, resync required"`, is closed, and must reconnect and resynchronize — while the
-session keeps running and its other destinations keep receiving output. A failed or cut connection never withholds a
-session's credit and never fails the shared host writer; only the stdio lane can. The default stdio
+unbounded queue. Socket queues keep their independent overflow/disconnect behavior: a connection whose queue would
+exceed 64 MiB is cut immediately, and a peer that has not accepted a single pending write within 30 seconds
+(`DEFAULT_STALL_MS`) is cut as a dead peer. That budget is a transport liveness bound and is deliberately independent
+of the 5-second worker control deadline — a busy client is not a dead one. A cut connection receives one `overflow`
+record (`error: "overflow, resync required"` or `"stalled, resync required"`); the host then half-closes the socket
+instead of destroying it, so a peer that resumes reading within a 5-second grace (`SOCKET_CUT_GRACE_MS`) still receives
+that notice, and everything already written to it, before EOF. A peer that is still silent when the grace expires has
+its socket destroyed. A cut peer must reconnect and resynchronize, while the session keeps running and its other
+destinations keep receiving output. A failed or cut connection never withholds a session's credit and never fails the
+shared host writer; only the stdio lane can. Because credit no longer paces a session against its slowest reader, a
+session that outruns a peer fills that peer's 64 MiB queue instead of slowing down, and that peer is then cut on
+overflow. The default stdio
 queue is bounded at 64 MiB or 4096 records, with reserved terminal-failure records and one control-overflow notice.
 Close admission counts both queued output and pending close replies (including their serialized bytes) before
 releasing an attachment or waiting for teardown. An admitted first closer reserves its lifecycle and terminal reply;
@@ -262,8 +289,11 @@ Canonical reservations and worker capacity remain held until native exit, includ
 The classic handler, extension UI bridge, renderer callbacks and provider scope run inside the owning worker; only
 plain data crosses IPC. Inline `main()` extension factories cannot be cloned and are rejected in shared mode: use
 file-backed extensions. Classic single-session RPC remains in-process. Standalone Bun builds must embed
-`src/modes/rpc/session-worker.ts` as an explicit entrypoint; Node bundles must ship `session-worker.js` beside the
-chunk containing its worker client. Third-party/rebranded Bun wrappers must pass the published
+`src/modes/rpc/session-worker.ts` as an explicit entrypoint. Bun 1.4.2 supports `--compile --splitting`
+with `--minify --keep-names`; standalone release and package binary builds use these flags to share code
+between embedded entries. Splitting does not change the worker-entry define contract below.
+Node bundles must ship `session-worker.js` beside the chunk containing its worker client.
+Third-party/rebranded Bun wrappers must pass the published
 `dist/modes/rpc/session-worker.js` as an additional compile entry, set an explicit `--root`, and set
 `--define=SENPI_RPC_SESSION_WORKER_ENTRY='"./<worker-path-relative-to-root>"'`. The define is a build-time
 contract, not an environment variable. Its path must match Bun's embedded entry name, not the source machine's
@@ -280,10 +310,10 @@ containment, or containment of arbitrary native code. They are not an extension 
 
 | Command | Params | Success data | Notes |
 | --- | --- | --- | --- |
-| `get_protocol_info` | - | `{ protocolVersion: 1, serverVersion: string, capabilities: string[], mode: "classic"\|"multi" }` | Answered in BOTH modes; side-effect-free; the capability probe. Multi-session hosts include `multi_session` plus the negotiated launch capabilities. |
-| `open_session` | `sessionPath?`, `cwd?`, `provider?`, `modelId?`, `thinkingLevel?`, `permissionPreset?` (all optional; paths MUST be absolute) | `{ sessionId, state: RpcSessionState, attached?: true }` | `sessionPath` = today's `--session` semantics (open-if-exists else create persisting there, `session-manager.ts:926-940`); `provider`/`modelId` applied only on create (resume restores the session's model — mirrors `SenpiSessionRuntime.ts:198-200`); params form the immutable launch profile (D8). When the path is already held by a fully-open session, the open ATTACHES to it: same routing handle, `attached: true`, one more attachment counted; the runtime is torn down only when the last attachment closes. Idle sessions past the eviction window are closed by the host itself. |
+| `get_protocol_info` | - | `{ protocolVersion: 1, serverVersion: string, capabilities: string[], mode: "classic"\|"multi" }` | Answered in BOTH modes; side-effect-free; the capability probe. Multi-session hosts include `multi_session` and `retain_on_disconnect` plus the negotiated launch capabilities. `retain_on_disconnect` is a HOST capability (a client never sends it) and is advertised only in multi-session mode, where the host owns the attachment refcount. |
+| `open_session` | `sessionPath?`, `cwd?`, `provider?`, `modelId?`, `thinkingLevel?`, `permissionPreset?`, `retain_on_disconnect?` (all optional; paths MUST be absolute) | `{ sessionId, state: RpcSessionState, attached?: true }` | `sessionPath` = today's `--session` semantics (open-if-exists else create persisting there, `session-manager.ts:926-940`); `provider`/`modelId` applied only on create (resume restores the session's model — mirrors `SenpiSessionRuntime.ts:198-200`); params form the immutable launch profile (D8). When the path is already held by a fully-open session, the open ATTACHES to it: same routing handle, `attached: true`, one more attachment counted; the runtime is torn down only when the last attachment closes. Idle sessions past the eviction window are closed by the host itself. `retain_on_disconnect: true` (default false) makes a dropped connection DETACH from this session instead of closing it — see "Retained sessions" below. |
 | `close_session` | `sessionId` | `{}` | Aborts active work, awaits agent idle + settled persistence for up to the host grace window (default 10s), then quarantines any worker that has not exited without releasing its path reservation; its response is the LAST record tagged with that handle for the first closer — no events after (test-pinned). An admitted concurrent close joins the same teardown and receives its own successful response; output saturation rejects admission with the bounded close-overflow/resync notice described above. |
-| `list_sessions` | - | `{ sessions: [{ sessionId, durableSessionId, sessionPath, cwd, name, status }] }` | Includes `opening`/`closing` entries. Internally quarantined workers remain externally `closing` until exit. |
+| `list_sessions` | - | `{ sessions: [{ sessionId, durableSessionId, sessionPath, cwd, name, status, attachments }] }` | Includes `opening`/`closing` entries. Internally quarantined workers remain externally `closing` until exit. `attachments` is the session's live client attachment count; `0` on an `open` row is a retained session with no client attached. |
 | every existing command | + `sessionId` (REQUIRED in multi mode) | unchanged | Routed to that session. |
 
 ### Identities (D6)
@@ -296,7 +326,8 @@ In the response `error` field, machine-matchable:
 
 - `unknown_session`
 - `session_closing`
-- `session_path_in_use` (path held by an opening, closing, quarantined, or superseded owner; a fully-open current owner is attached instead)
+- `session_path_in_use` (path held by an opening, closing, or quarantined owner; a fully-open current owner is attached instead, and a path a live owner has superseded is released rather than held)
+- `session_reservation_limit` (this worker already holds 64 live session paths; the open or session replacement was refused without disturbing the existing session)
 - `missing_session_id` (session-scoped command without `sessionId` in multi mode)
 - `multi_session_disabled` (`open_session` in classic mode)
 - `invalid_path` (relative `sessionPath`/`cwd`)
@@ -313,7 +344,7 @@ Strict FIFO per session; one total stdout order; cross-session order unspecified
 
 ### Duplicate/idempotency
 
-Duplicate `open_session` while a path reservation is held by a fully-open session → ATTACH (`attached: true`, same handle); while held by an `opening`/`closing` entry (including internal quarantine) → `session_path_in_use`. `close_session` releases one attachment; the runtime is disposed only when the last attachment closes. A close for an entry already `closing` joins its in-flight teardown. `close_session` on unknown/already-closed → `unknown_session` error. The grace window is configurable by the host through `SENPI_RPC_CLOSE_GRACE_MS`. Request `id`s are client-owned; the server echoes them without dedup.
+Duplicate `open_session` while a path reservation is held by a fully-open session → ATTACH (`attached: true`, same handle), including when that session is retained with zero attachments; while held by an `opening`/`closing` entry (including internal quarantine) → `session_path_in_use`. A path whose owner has already replaced it with another session file is no longer held: that open allocates a new worker and resumes the file. `close_session` releases one attachment; the runtime is disposed only when the last attachment closes. A close for an entry already `closing` joins its in-flight teardown. `close_session` on unknown/already-closed → `unknown_session` error. The grace window is configurable by the host through `SENPI_RPC_CLOSE_GRACE_MS`. Request `id`s are client-owned; the server echoes them without dedup.
 
 ## Protocol Overview
 
@@ -392,7 +423,7 @@ image payloads are not counted toward this text limit.
 
 #### steer
 
-Queue a steering message while the agent is running. It is delivered after the current assistant turn finishes executing its tool calls, before the next LLM call. Skill commands and prompt templates are expanded. Extension commands are not allowed (use `prompt` instead).
+Queue a steering message while the agent is running. It is delivered after the current assistant turn finishes executing its tool calls, before the next LLM call. Skill commands and prompt templates are expanded. Extension commands are not allowed (use `prompt` instead). Like `prompt`, queued input runs extension `input` handlers with `source: "rpc"`.
 
 ```json
 {"type": "steer", "message": "Stop and do this instead"}
@@ -414,7 +445,7 @@ See [set_steering_mode](#set_steering_mode) for controlling how steering message
 
 #### follow_up
 
-Queue a follow-up message to be processed after the agent finishes. Delivered only when agent has no more tool calls or steering messages. Skill commands and prompt templates are expanded. Extension commands are not allowed (use `prompt` instead).
+Queue a follow-up message to be processed after the agent finishes. Delivered only when agent has no more tool calls or steering messages. Skill commands and prompt templates are expanded. Extension commands are not allowed (use `prompt` instead). Extension `input` handlers run with `source: "rpc"`.
 
 ```json
 {"type": "follow_up", "message": "After you're done, also do this"}
@@ -1318,7 +1349,7 @@ Each command has:
 - `sourceInfo`: Provenance metadata for the owning resource (present for all sources, including extensions):
   - `path`: Absolute file path to the command source
   - `source`: Source identifier string (for example `"auto"` for auto-discovered locations, `"local"` for settings entries, `"cli"` for CLI paths, `"builtin"`, `"sdk"`, or a package source)
-  - `scope`: `"user"`, `"project"`, or `"temporary"`
+  - `scope`: `"user"`, `"project"`, `"temporary"`, or `"system"` (harness-provided: builtin and bundled extensions, command-line packages declaring `pi.system`, and what they contribute)
   - `origin`: `"package"` or `"top-level"`
   - `baseDir`: Base directory of the owning resource (optional)
 

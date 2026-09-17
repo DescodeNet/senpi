@@ -1,5 +1,5 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Transport } from "@earendil-works/pi-ai";
+import { DEFAULT_MAX_AGENT_RETRY_DELAY_MS, type Transport } from "@earendil-works/pi-ai";
 import { SENPI_DEFAULT_RETRY_PROFILE } from "@earendil-works/pi-ai/utils/retry-profile/profiles";
 import type {
 	RetryPolicyProfile,
@@ -17,7 +17,7 @@ import { findNearestParentConfigDir } from "../nearest-parent-config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import { envValue } from "./brand.ts";
-import type { CompactionSettings } from "./compaction-settings-access.ts";
+import type { CompactionModelSelector, CompactionSettings } from "./compaction-settings-access.ts";
 import {
 	compactionEnabled,
 	compactionKeepRecentTokens,
@@ -57,12 +57,29 @@ import {
 	type PromptCacheSettings,
 	type ThinkingBudgetsSettings,
 } from "./settings-shapes.ts";
-import type { BranchSummarySettings, TerminalSettings } from "./terminal-settings.ts";
+import {
+	type BranchSummarySettings,
+	isTerminalMouseMode,
+	type TerminalMouseMode,
+	type TerminalSettings,
+} from "./terminal-settings.ts";
 
+// `CompactionSettings` (now including `modelOverrides`), `CompactionModelOverride`,
+// `RetrySettings` and the rest of the public settings shapes live in their own modules;
+// this re-export keeps every existing importer's path working.
 export type * from "./settings-public-types.ts";
 
 export const DEFAULT_STREAM_START_TIMEOUT_MS = 300_000;
 export const DEFAULT_PROVIDER_STREAM_RETRY_TIMEOUT_MS = 30_000;
+
+/** Warn threshold for a single `session_shutdown` extension handler. */
+export const DEFAULT_SESSION_SHUTDOWN_HANDLER_WARN_MS = 2_000;
+/**
+ * Hard cap for a single `session_shutdown` extension handler. Higher than the
+ * 2s warning because several extensions persist durable state at shutdown; a
+ * hung handler still must not hold quit/reload/new/resume hostage.
+ */
+export const DEFAULT_SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS = 10_000;
 
 export type TuiMode = RendererTuiMode;
 export type FullscreenExitOutput = "transcript" | "resume-hint";
@@ -188,6 +205,8 @@ export interface Settings {
 	httpProxy?: string; // Proxy URL applied as HTTP_PROXY and HTTPS_PROXY for Pi-managed HTTP clients
 	httpIdleTimeoutMs?: number; // HTTP header/body idle timeout in milliseconds; 0 disables it
 	websocketConnectTimeoutMs?: number; // WebSocket connect/open handshake timeout in milliseconds; 0 disables it
+	sessionShutdownHandlerWarnMs?: number; // Warn when one session_shutdown extension handler runs this long; 0 disables the warning
+	sessionShutdownHandlerTimeoutMs?: number; // Abort and skip a session_shutdown extension handler after this long; 0 disables the cap
 	tuiMode?: TuiMode; // default: "regular"
 	fullscreenExitOutput?: FullscreenExitOutput; // default: "transcript"; no effect in regular TUI mode
 	fullscreenScrollbar?: ScrollViewScrollbar; // default: "auto"; no effect in regular TUI mode
@@ -805,11 +824,12 @@ export class SettingsManager {
 		};
 	}
 
-	getAskUserSettings(): { enabled: boolean; timeoutMinutes: number } {
+	getAskUserSettings(): { enabled: boolean; timeoutMinutes: number; bell: boolean } {
 		const configured = this.settings.askUser;
 		return {
 			enabled: typeof configured?.enabled === "boolean" ? configured.enabled : true,
 			timeoutMinutes: resolveAskUserTimeoutMinutes(configured?.timeoutMinutes),
+			bell: typeof configured?.bell === "boolean" ? configured.bell : true,
 		};
 	}
 
@@ -1270,17 +1290,23 @@ export class SettingsManager {
 		this.save();
 	}
 
-	getCompactionReserveTokens(): number {
-		return compactionReserveTokens(this.settings.compaction);
+	/**
+	 * Token budgets resolve through the per-model override table (`compaction.modelOverrides`,
+	 * exact `provider/modelId` keys) before the ordinary setting and the built-in default.
+	 */
+	getCompactionReserveTokens(forModel?: CompactionModelSelector): number {
+		return compactionReserveTokens(this.settings.compaction, forModel);
 	}
 
-	getCompactionKeepRecentTokens(): number {
-		return compactionKeepRecentTokens(this.settings.compaction);
+	getCompactionKeepRecentTokens(forModel?: CompactionModelSelector): number {
+		return compactionKeepRecentTokens(this.settings.compaction, forModel);
 	}
 
-	getCompactionSettings(): ResolvedCompactionSettings & { model?: string } {
+	getCompactionSettings(forModel?: CompactionModelSelector): ResolvedCompactionSettings & { model?: string } {
 		return {
-			...resolveCompactionSettings(this.settings.compaction),
+			...resolveCompactionSettings(this.settings.compaction, forModel),
+			// `compaction.model` is the summarization model, a different concept from the
+			// session model whose per-model token budgets `forModel` resolves.
 			model: this.settings.compaction?.model,
 		};
 	}
@@ -1309,10 +1335,16 @@ export class SettingsManager {
 		this.save();
 	}
 
+	/** True when the user explicitly configured retry.maxAgentDelayMs in settings (not the shipped default). */
+	isRetryMaxAgentDelayMsConfigured(): boolean {
+		return this.settings.retry?.maxAgentDelayMs !== undefined;
+	}
+
 	getRetrySettings(): {
 		enabled: boolean;
 		maxRetries: number;
 		baseDelayMs: number;
+		maxAgentDelayMs: number;
 	} {
 		return {
 			enabled: this.getRetryEnabled(),
@@ -1320,6 +1352,7 @@ export class SettingsManager {
 			// same budget on every consumer, so the default tracks the shipped profile.
 			maxRetries: this.settings.retry?.maxRetries ?? SENPI_DEFAULT_RETRY_PROFILE.turn.maxRetries,
 			baseDelayMs: this.settings.retry?.baseDelayMs ?? 2000,
+			maxAgentDelayMs: this.settings.retry?.maxAgentDelayMs ?? DEFAULT_MAX_AGENT_RETRY_DELAY_MS,
 		};
 	}
 
@@ -1426,6 +1459,47 @@ export class SettingsManager {
 		}
 		this.globalSettings.httpIdleTimeoutMs = Math.floor(timeoutMs);
 		this.markModified("httpIdleTimeoutMs");
+		this.save();
+	}
+
+	/**
+	 * How long one extension's `session_shutdown` handler may run before the host
+	 * warns about it. 0 disables the warning.
+	 */
+	getSessionShutdownHandlerWarnMs(): number {
+		return (
+			parseTimeoutSetting(this.settings.sessionShutdownHandlerWarnMs, "sessionShutdownHandlerWarnMs") ??
+			DEFAULT_SESSION_SHUTDOWN_HANDLER_WARN_MS
+		);
+	}
+
+	setSessionShutdownHandlerWarnMs(warnMs: number): void {
+		if (!Number.isFinite(warnMs) || warnMs < 0) {
+			throw new Error(`Invalid sessionShutdownHandlerWarnMs setting: ${String(warnMs)}`);
+		}
+		this.globalSettings.sessionShutdownHandlerWarnMs = Math.floor(warnMs);
+		this.markModified("sessionShutdownHandlerWarnMs");
+		this.save();
+	}
+
+	/**
+	 * Hard cap on one extension's `session_shutdown` handler. On expiry the host
+	 * aborts that handler's `event.signal`, reports an extension error and moves
+	 * on to the next handler. 0 disables the cap (unbounded, pre-budget behavior).
+	 */
+	getSessionShutdownHandlerTimeoutMs(): number {
+		return (
+			parseTimeoutSetting(this.settings.sessionShutdownHandlerTimeoutMs, "sessionShutdownHandlerTimeoutMs") ??
+			DEFAULT_SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS
+		);
+	}
+
+	setSessionShutdownHandlerTimeoutMs(timeoutMs: number): void {
+		if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
+			throw new Error(`Invalid sessionShutdownHandlerTimeoutMs setting: ${String(timeoutMs)}`);
+		}
+		this.globalSettings.sessionShutdownHandlerTimeoutMs = Math.floor(timeoutMs);
+		this.markModified("sessionShutdownHandlerTimeoutMs");
 		this.save();
 	}
 
@@ -1892,6 +1966,19 @@ export class SettingsManager {
 		}
 		this.globalSettings.terminal.imageWidthCells = Math.max(1, Math.floor(width));
 		this.markModified("terminal", "imageWidthCells");
+		this.save();
+	}
+
+	getTerminalMouse(): TerminalMouseMode {
+		const value = this.settings.terminal?.mouse;
+		return isTerminalMouseMode(value) ? value : "whilePending";
+	}
+
+	setTerminalMouse(mouse: TerminalMouseMode): void {
+		if (!isTerminalMouseMode(mouse)) throw new TypeError("Invalid terminal.mouse");
+		this.globalSettings.terminal ??= {};
+		this.globalSettings.terminal.mouse = mouse;
+		this.markModified("terminal", "mouse");
 		this.save();
 	}
 

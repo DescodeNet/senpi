@@ -91,9 +91,24 @@ describe("model usability budget", () => {
 		// declaring a switch, so an empty session keeps the cold-start contract - the
 		// switch wording would promise a compaction remedy with nothing to compact.
 		expect(error.projection.admission).toBe("start");
-		expect(error.message).toBe(
-			'Model "faux/low-context" cannot start: context window 16000 tokens is 21464 tokens short of the 37464-token minimum (system prompt 1, active tool schemas 695, output reserve 4000, compaction reserve 16384, speculation lead 8192, safety margin 8192 [default]).',
-		);
+		// #1678: the restored default grep, rebuilt on the engine contract, adds 240
+		// schema units. Assert the machine projection rather than pinning the
+		// human-readable error sentence.
+		expect(error.projection).toMatchObject({
+			model: "faux/low-context",
+			contextWindow: 16_000,
+			liveContextTokens: 0,
+			systemPromptTokens: 1,
+			activeToolSchemaTokens: 998,
+			outputReserveTokens: 4_000,
+			compactionReserveTokens: 16_384,
+			speculationLeadTokens: 8_192,
+			safetyMarginTokens: 8_192,
+			safetyMarginProfile: "default",
+			requiredTokens: 37_767,
+			shortfallTokens: 21_767,
+			usable: false,
+		});
 	});
 
 	it("rejects a downswitch before committing when live context exceeds the target budget", async () => {
@@ -126,8 +141,11 @@ describe("model usability budget", () => {
 			safetyMarginTokens: 8_192,
 			usable: false,
 		});
-		expect(error.projection.liveContextTokens).toBeGreaterThanOrEqual(318_180);
-		expect(error.projection.liveContextTokens).toBeLessThanOrEqual(318_280);
+		// The usage estimate includes the current prompt and schemas; live messages
+		// exclude them exactly, including restored grep's schema and guidance.
+		expect(error.projection.liveContextTokens).toBe(
+			321_000 - error.projection.systemPromptTokens - error.projection.activeToolSchemaTokens,
+		);
 		expect(error.projection.speculationLeadTokens).toBeGreaterThan(0);
 		expect(error.projection.requiredTokens).toBe(
 			error.projection.liveContextTokens +

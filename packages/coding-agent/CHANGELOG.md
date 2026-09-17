@@ -6,6 +6,320 @@
 
 ### Added
 
+- `$skill` mentions in the prompt editor now behave like Codex mentions. A `$name` or `$skill:name` token at a whitespace boundary that names a loaded skill is rendered bold in the new `skillMention` theme color (falls back to `mdLink`) whether it came from the popup, typing, or a paste; `$HOME`, `$1`, and unknown names stay plain. The `$` popup opens for any boundary token however many mentions precede it, so one prompt can carry several skills (mid-prompt it offers skills only, and an exact known-skill token closes it so `enter` submits). On submit every mentioned skill is expanded, including inline `$name` mentions that used to reach the model as literal text, and the transcript's `[skill]` block and the HTML export list every invoked skill with each body expandable. The explicit `$skill:name` form and the RPC `skill_invocation` metadata are unchanged. ([#1778](https://github.com/code-yeongyu/senpi/issues/1778))
+
+- Shared RPC hosts (`--mode rpc --multi-session`) accept `open_session { retain_on_disconnect: true }`: the session then survives its last client's disconnect instead of being closed with it. The dropped connection only releases its attachment — the session stays in `list_sessions` (now with an `attachments` count, `0` when no client is attached), finishes any in-flight turn, and a later `open_session` with the same `sessionPath` re-attaches to the same routing handle (`attached: true`). An explicit `close_session`, host shutdown and the idle-eviction window still end it, and a session opened without the flag behaves exactly as before. Hosts advertise the capability `retain_on_disconnect` in `get_protocol_info` so a client can probe for it. ([#1776](https://github.com/code-yeongyu/senpi/issues/1776))
+
+- Default reads of `.js` files now return a structural summary instead of the whole file. A tree-sitter grammar, loaded lazily on the first JavaScript read and bounded by a 250ms parse budget, finds the implementation bodies that are safe to omit; the file's declarations, signatures and headers always stay visible, and every omitted range is reported with the `offset`/`limit` needed to reread it. Measured on the frozen bake-off corpus against the same signature-safety oracle and the same 90%-of-reference threshold the JSON selection uses: 41.9% median token saving for JavaScript against a 35.5% bar, where the previous dependency-free scan reached 0%. TypeScript and TSX stay raw - their grammar candidate is safe but most of their files cannot fit the summary's 100 visible-line budget - and JSON keeps its existing scan. A grammar that is missing, fails to parse or runs out of budget falls back to the previous behaviour for that read. The grammar and runtime artifacts add 607KB to the package and 693KB to the compiled binary (75,040,242 → 75,750,258 bytes on darwin-arm64), 5.6% of the 12MiB budget the release gate enforces, and the first JavaScript structural read costs 11.9ms more than before (13.6ms vs 1.7ms, median of 11 cold processes). ([#1685](https://github.com/code-yeongyu/senpi/issues/1685))
+
+### Changed
+
+- `ExtensionContext.kernelTools` is typed as the shipped kernel-tools surface: `invoke(request, options?)` accepts `{ signal?, scope? }` (a bare `AbortSignal` still works) and `capabilities.invokeScope` is present. Coding-agent owns `ExtensionKernelTools`, `KernelToolInvokeOptions`, and `KernelToolInvokeScope`; senpi-codemode binds its implementation to those types so they cannot drift ([#1731](https://github.com/code-yeongyu/senpi/issues/1731)).
+
+### Fixed
+
+- A shared RPC host no longer disconnects a client that is merely busy. The host used to return a session worker's output credit only after every connected client had drained that record to the kernel, so the slowest client paced the producing session and the stall cut had to fire before the worker's 5-second credit deadline: a client that stopped reading its socket for 4 seconds with as little as 16 KB pending was treated as dead, cut, and had all of its sessions released (observed 12 times in 35 minutes against one desktop client on a loaded machine). Credit is now returned as soon as each connection has accepted the record into its own 64 MiB queue, the dead-peer cut is a 30-second transport liveness budget that no longer depends on the worker deadline, and a cut connection is half-closed instead of destroyed, so a client that resumes reading within 5 seconds finally receives the `overflow` notice - and the records already queued for it - before EOF. A client that outruns its own reading still overflows its queue and is cut, and a client that never reads again is still disconnected. ([#1774](https://github.com/code-yeongyu/senpi/issues/1774))
+- The experimental server no longer lets a Session worker's operation response overtake the provider updates the worker emitted before it. A worker writes a run's transcript updates and that run's response to one control channel in order, but the server forwarded updates through a delivery chain that awaits the client socket write while it settled responses the moment they arrived, so a client that was slow to drain received the prompt response ahead of the run's trailing `run_end` and tore its transcript subscription down on top of the undelivered events (the event stream ended at `entry_added`, and the same race could return an empty answer). Both now share one FIFO per attachment, so a slow drain delays the response instead of dropping events, bounded by the connection's existing pending-byte limit and its explicit disconnect. The experimental client also keeps its transcript subscription until the prompted run's own terminal event arrives, rather than until the response resolves. ([#1676](https://github.com/code-yeongyu/senpi/issues/1676))
+- Native image generation is no longer refused for official OpenAI Codex OAuth sessions: the `openai-codex-responses` transport on the exact `chatgpt.com` host now passes the native image gate without changing the model's API or base URL, and the bundled `gpt-image-gen` skill is contributed whenever native generation is active, even without client image credentials; proxies, host lookalikes, malformed URLs, explicit opt-out, and the global disable flag keep their prior behavior.
+
+### Removed
+
+## [2026.9.16-3] - 2026-09-16
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+- The stream guard now interrupts a message that keeps restating itself in different words, not only one that repeats a paragraph verbatim. A paragraph counts as an echo when its normalized word set overlaps an earlier paragraph of the same message by half, and the guard acts only once at least 8 of the last 12 paragraphs are echoes, so a repeated sentence, a callback, or a closing summary is left alone while a narration loop is cut within a few thousand characters. Paragraphs inside fenced code blocks are ignored, and the earlier text is kept - only the repeated run is dropped before the retry. Measured against 12,499 real assistant messages, the rule matched nothing except two known runaway generations. ([#1330](https://github.com/code-yeongyu/senpi/issues/1330))
+
+- `--help` no longer boots the engine to print a help screen. The usage text and the flags extensions register are answered from a cache of the last launch's flag set (`<agentDir>/cache/help-flags.json`, validated against the engine version and the mtime/size of every extension, settings and trust input, so an upgrade or an edited extension refreshes it); a cache miss loads extensions for their flags only and skips the model runtime, the session and every other resource class. Measured warm on an Apple M4 Pro: 790ms → 28ms on bun and 959ms → 59ms on node for `--help`; a help screen never prompts for project trust and never runs project-local extension code that is not already trusted. ([oh-my-openagent#8371](https://github.com/code-yeongyu/oh-my-openagent/issues/8371))
+
+### Fixed
+
+- The startup spinner is drawn the moment interactive startup begins instead of after a 120ms grace timer. That timer could not fire while the synchronous extension imports it was meant to cover were running, so on a real terminal the first frame appeared only once the whole load was done (measured: first byte at 2.27s, one frame before the TUI took over) and the load ran on a blank screen. ([oh-my-openagent#8371](https://github.com/code-yeongyu/oh-my-openagent/issues/8371))
+
+### Removed
+
+## [2026.9.16-2] - 2026-09-16
+
+### Breaking Changes
+
+### Added
+
+- Added `/rename [name]` to rename the current session from the TUI: with an argument it sets the name immediately, without one it opens an inline editor prefilled with the current name (Enter commits, Esc cancels, empty names are rejected). `/name` remains as an alias, and the new unbound `app.session.renameCurrent` keybinding action opens the same editor. ([#1738](https://github.com/code-yeongyu/senpi/issues/1738))
+
+### Changed
+
+- Large tool-result strings evicted from the resident store persist to a per-session blob backing and hydrate on read instead of forcing a full session-JSONL reparse. Blob names are the SHA-256 of the text, so a string that is hydrated and externalized again maps to the same file, and two processes sharing a session directory can only ever write identical bytes under one name. Blobs are integrity-checked envelopes: a corrupt file is deleted on read and the entry falls back to JSONL recovery. `--no-session` never writes blobs ([#1746](https://github.com/code-yeongyu/senpi/issues/1746)).
+- Idle sessions release the memoized entry views and tokenize the runtime message state only once the store has evicted something; `session.messages` and the compaction estimators hydrate those tokens before returning, so readers never see resident tokens. The blob directory is removed when the session manager is disposed, when the session is switched or branched, and stale blobs are cleared when a persisted session is reopened ([#1746](https://github.com/code-yeongyu/senpi/issues/1746)).
+- Compaction spills resident strings to the blob backing instead of dropping them, keeping post-compaction reads on the per-string hydration path.
+- Branched sessions materialize entry content before the previous backing is released, so resident tokens can no longer be written into a new branched session file.
+
+### Fixed
+
+- Moving the model selector off a Claude model and back no longer re-sends the whole conversation. Leaving the `claude-sdk-oauth` provider now closes the live SDK session but keeps its continuity binding - the same thing a thinking-level change already did - so returning to the same Claude model re-attaches to the existing session and sends only the messages added while you were away, instead of paying for the full history again. Switching to a different Claude model, a restart with no usable transcript, a diverged conversation and an unacknowledged session id all still start fresh exactly as before. When a binding really was discarded, the transcript notice now names the recorded cause (`model_selected`, `tainted_compaction`, `branch_diverged`, `extensions_removed`, ...) instead of the generic `registry_miss`, which from now on means only "no record was ever found" ([#1747](https://github.com/code-yeongyu/senpi/issues/1747)).
+
+- A provider that accepts a request and never starts streaming no longer ends the turn with the watchdog's own message (`Provider stream start timed out after 180000ms ...`). The stall is still retried on the same model with the configured stream-start bound, and still hands the turn to the next model in a configured `retry.fallbackChains` entry whose answer becomes the turn result. What changed is what you read: the transcript (and `senpi -p`) describes the stall in plain language, and when nothing can take the turn over the final line names the stalled model, the attempts spent and the next step - `/fallback`, resending, or raising `retry.provider.streamStartTimeoutMs` (`0` disables). The wording on the assistant message is unchanged, so retry classification and fallback routing behave exactly as before ([#1740](https://github.com/code-yeongyu/senpi/issues/1740)).
+
+- A session no longer dead-ends when the compaction summarizer is killed by a provider or credential failure. Such a stream used to end required compaction with the raw internal `senpi:no-turn-retry:` marker, which also disabled auto-retry and model fallback; because compaction never applied, the context stayed above the threshold and every following prompt failed identically. Those failures now apply the deterministic compaction checkpoint (retained-suffix safety checks unchanged) and the turn continues, with one plain warning saying a provider summary could not be completed, that a checkpoint was applied and older detail was dropped, and that it is safe to continue. Provider refusals, missing credentials and user aborts still surface loudly instead of reducing context. One compaction is also bounded at 15 minutes total across every attempt and retry regardless of input size (an explicit `compaction.summarizationMaxDurationMs` above that still wins), and the summary stream's final settlement now happens inside the watchdog, so a provider whose stream ends without a terminal event can no longer park compaction with no timer armed ([#1741](https://github.com/code-yeongyu/senpi/issues/1741)).
+
+### Removed
+
+## [2026.9.16] - 2026-09-16
+
+### Breaking Changes
+
+### Added
+
+- Extensions receive a per-handler `signal` on the `session_shutdown` event. The host aborts it when that handler exceeds its budget, so long shutdown work can stop cleanly instead of being left behind ([#1732](https://github.com/code-yeongyu/senpi/issues/1732)).
+
+- Added the optional `ExtensionContext.kernelTools` capability with `describe(names)` and `invoke(request, signal?)`. It is present only while a JavaScript eval cell owns the host-tool context, so an extension tool called from inside that cell can reach the functions the cell registered with `tool(fn)`; on older runtimes and outside such a cell it is `undefined`. The package exports `kernelToolsStorage` and the `ExtensionKernelTools` type for hosts that install the capability ([#1647](https://github.com/code-yeongyu/senpi/issues/1647)).
+
+### Changed
+
+- Default `read` calls on eligible `.json` files now return the agent package's structural view, with the same declaration-safe folding and numeric `offset`/`limit` rereads, so edits after a read still target real lines. TypeScript and JavaScript stay raw because the measured candidate missed their quality thresholds. Prose, explicit ranges and the existing size-limit continuations produce the same output as before. `ReadToolOptions.folder` selects the folder; `createReadToolDefinition`, `createCodingTools` and `createReadOnlyTools` default it to `selectedReadFolder`, and an options object without `folder` keeps reads verbatim. Compiled binaries produce byte-identical read output to the source build, and no parser dependency is added ([#1639](https://github.com/code-yeongyu/senpi/issues/1639)).
+
+### Fixed
+
+- One extension can no longer hold quit, `/reload`, `/new`, `/resume` or a fork hostage: senpi now bounds every `session_shutdown` handler itself. A handler still running after `sessionShutdownHandlerWarnMs` (default 2000) logs one warning naming the extension, and at `sessionShutdownHandlerTimeoutMs` (default 10000) senpi aborts that handler's `event.signal`, reports an extension error naming it, and continues teardown with the remaining handlers. Set either setting to `0` to disable that half. Handlers that finish under the warning threshold are unaffected, and every other extension event keeps its uncapped wait (ask-user and approval dialogs may legitimately block for minutes) ([#1732](https://github.com/code-yeongyu/senpi/issues/1732)).
+
+### Removed
+
+## [2026.9.15-2] - 2026-09-15
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+- Standalone binaries load codemode from the staged on-disk package instead of embedding a second copy; the sidecar includes its JS parser dependency and retains the bun-1-4 skill ([#1656](https://github.com/code-yeongyu/senpi/issues/1656)).
+
+### Fixed
+
+- RPC `close_session` acknowledgements and `session_closed` events, including worker-failure terminals, are published only after the session registry has removed the entry, so an immediate `list_sessions` never returns the closed session. Filesystem watchers are cancelled atomically with shutdown, every disposer is joined before process exit, reentrant RPC shutdown shares that join and keeps a failure exit code, and nonpersistent RPC probes do not start watchers ([#1656](https://github.com/code-yeongyu/senpi/issues/1656)).
+
+- The RPC host watchdog's ppid fallback no longer spawns `ps -o lstart=` every 250ms while the supervisor is alive: a dead supervisor is reaped by its own parent and the host is then reparented, so the free `kill(pid, 0)` + ppid comparison observes the loss without any child process. Long-lived shared hosts no longer accumulate thousands of `ps` children (zombies on runtimes that fail to reap them) ([#1507](https://github.com/code-yeongyu/senpi/issues/1507)).
+
+- Terminal monitors no longer burn CPU while paused: a paused file watch clears its 250ms poll timer entirely (no stat/SHA-256 digest work) and resume runs one immediate check, so a change made during the pause still fires. Session-output line buffers are now capped at 64KiB, so a newline-less stream can no longer grow a monitor's retained tail without bound ([#1698](https://github.com/code-yeongyu/senpi/issues/1698)).
+
+- Long, compaction-trimmed sessions no longer re-parse the entire session file every time the working/retry status animation cadence is decided (which periodically froze the UI on multi-day sessions): the cadence reads an O(1) maintained entry count, `SessionManager#getEntryCount()`; explicit full-history retrieval is unchanged ([#1699](https://github.com/code-yeongyu/senpi/issues/1699)).
+
+
+- The Cursor CLI OAuth lane no longer spawns `cursor-agent models` on every senpi start. The startup catalog probe runs only when the lane is usable (not disabled, `cursor-agent` installed, at least one account bound), inside that account's HOME, and every `cursor-agent` spawn (turn, `models`, `--version`) now receives the same explicit environment allowlist instead of the inherited `process.env`. Hermetic or SSH-launched senpi processes therefore never trigger the CLI's macOS keychain preflight, which used to surface as a blocking "Keychain Not Found" dialog for `cursor-keychain-probe` on the logged-in console ([#1722](https://github.com/code-yeongyu/senpi/issues/1722)).
+
+### Removed
+
+## [2026.9.15] - 2026-09-15
+
+### Breaking Changes
+
+### Added
+
+- Added a real search engine behind `grep`. A native `senpi-grep` addon walks the tree with ordered parallelism, bounded reads and cancellation, and ripgrep stays as the fallback; `SENPI_GREP_ENGINE=auto|native|rg` chooses, and `SENPI_GREP_NATIVE_PATH` points at a different addon. `mode` selects `content`, `count` or `files`, `limit` and `skip` paginate over files, `path` takes a file, a directory, an array or a `<file>:L1-L2` selector, and `glob` accepts `!` exclusions. Every result ends in a `[grep: matches=2 files=2 searched=42 elapsedMs=8 engine=native nextSkip=none]` footer and carries `details` v1 with structured matches, file counts, scan status and pagination. The TUI, the HTML export and the eval widget group the matches under their file ([#1678](https://github.com/code-yeongyu/senpi/issues/1678)).
+
+- Added `exposure: "eval"` to tool definitions: enabled tools remain registered and callable inside eval while hidden from direct model calls whenever eval is available. Built-in `bash`, `powershell` and `grep` declare this exposure; explicit SDK `evalOnlyToolNames` overrides still take precedence ([#1678](https://github.com/code-yeongyu/senpi/issues/1678)).
+
+- Added a builtin herdr lifecycle reporter: pending questions and host dialogs mark the pane blocked with their label, active turns/subagents/monitors remain working, and settlement restores idle. It coexists with herdr's managed integration, defers to loaded user-authored `herdr-*` reporters, and releases the pane only on quit. Extensions can inspect the optional read-only `ctx.loadedExtensionPaths` list ([#1645](https://github.com/code-yeongyu/senpi/issues/1645)).
+
+- Added clickable pending-question options, own-answer entry, question cycling and expanded question tabs in regular and fullscreen modes. A single-question option click commits its selection highlight before answering. The new `terminal.mouse` setting defaults to `whilePending`; `off` disables capture in both modes, while `always` keeps regular-mode capture active. Native selection bypass hints appear while questions capture the mouse ([#1645](https://github.com/code-yeongyu/senpi/issues/1645)).
+
+### Changed
+
+- Retired the `GrepOperations` override hook from `GrepToolOptions` in favor of the engine-backed grep implementation, and aligned Cursor `pi_grep` frames with the new `pattern`/`path`/`glob`/`ignoreCase`/`literal`/`context`/`limit` contract. Unknown Cursor flags are ignored with a debug log. The tool always returns the structured footer and `details` v1 contract ([#1678](https://github.com/code-yeongyu/senpi/issues/1678)).
+
+- Restored `grep` as a default eval-only tool, callable with `tool.grep({ pattern, path })` and discoverable through `tool_schema`. Direct model calls return an eval hint without executing; sessions without eval retain direct grep access, and existing hooks and permissions still apply ([#1678](https://github.com/code-yeongyu/senpi/issues/1678)).
+
+- `tool_search` is now side-effect-free: it lists up to five matching deferred tools with their parameter schemas and never activates them; calling a listed tool by name activates it on that first call, so the "callable from your NEXT turn" round trip is gone and the request's tools array only changes when a tool is genuinely used. Results are gated on query-term coverage and a relative score floor, so an incidental word match no longer surfaces unrelated tools, and a query naming an eval-only or removed tool (`bash`, `monitor`, ...) answers with that tool's redirect hint instead of "No tools matched" ([#1682](https://github.com/code-yeongyu/senpi/issues/1682)).
+
+- `generate_image` is registered as a deferred (search-exposed) tool: it no longer ships its ~1K-token schema on every request and activates on the first by-name call; the bundled imagegen skill names it ([#1682](https://github.com/code-yeongyu/senpi/issues/1682)).
+
+- Replaced webfetch's browser-emulation dependency with inert LinkeDOM parsing, preserving reader output and omitted document tags while resolving relative article links and images against the final response URL and retiring CSS/XHR compile assets ([#1656](https://github.com/code-yeongyu/senpi/issues/1656)).
+
+- Compiled Bun binaries load TypeScript extensions through native runtime modules instead of embedding jiti, preserving host-module identity and fresh dependency graphs on reload. Computed imports and requires share their generation, unused graphs can be reclaimed, native data imports keep Bun's loaders, and parser errors retain source locations. Node runtimes retain their existing jiti options and load only their own importer when needed ([#1656](https://github.com/code-yeongyu/senpi/issues/1656)).
+
+
+### Fixed
+
+- Fixed background processes surviving shutdown when the shell that started them exited first: the bash tool now keeps owning a command's process group until its last descendant is gone, so `sleep 30 &` or `nohup server &` is killed by shutdown cleanup instead of being orphaned. Tracked groups that have drained are pruned, and a group whose leader already exited is never re-signalled by bare pid ([#1697](https://github.com/code-yeongyu/senpi/issues/1697)).
+
+- Fixed native grep reporting duplicate files across overlapping roots and symlink aliases; each file is searched once and reported under its lexically smallest display path without canonicalizing every file ([#1678](https://github.com/code-yeongyu/senpi/issues/1678)).
+
+- Fixed deferred (search-exposed) tools never activating by name in sessions without the tool-search builtin: the session now promotes the tool itself when no catalog activator claims it ([#1682](https://github.com/code-yeongyu/senpi/issues/1682)).
+
+- Fixed the standalone Node bundle builder's Bun-only imports and native package boundaries, and prevented shared-session workers from entering the supervisor CLI after bundling ([#1656](https://github.com/code-yeongyu/senpi/issues/1656)).
+
+- Fixed Enter on multi-select question options to toggle the highlighted choice without advancing, including option 1; empty own-answer commits preserve selections, and hints direct users to Tab and Submit when done (#8249).
+
+- Fixed unclickable short startup question blocks inside tmux by calibrating the frame from two stable pane-cursor CLI readings, bounded by 750 ms. Private cursor queries remain unchanged outside tmux, and uncertain positions still ignore clicks ([#1645](https://github.com/code-yeongyu/senpi/issues/1645)).
+
+- Fixed `/btw` showing its question twice in the interactive TUI: extension commands no longer paint an optimistic user bubble while their handler runs on either submit path (Enter and Alt+Enter follow-up while streaming), so only the side-question panel shows the question during the stream.
+
+- Fixed the `Tip:` line reading as part of the block above it: every tip surface — the startup header and the working-status row — now renders one blank line above the tip ([#1680](https://github.com/code-yeongyu/senpi/issues/1680)).
+
+- Fixed the `/btw` panel having no off switch: a bare `/btw` now dismisses the panel (or cancels the in-flight side query), Escape is matched through the shared key matcher so it also works under the kitty keyboard protocol (and kitty key-release events are ignored so they cannot cancel the query), and the panel footer names both.
+
+- Fixed publish staging so the packed tarball mirrors `publish-deps.lock.json` exactly regardless of how the developer's package manager laid out `node_modules`: nested manifest entries (such as `htmlparser2`'s own `entities@7`) are staged at their manifest path from a version-matched installed copy, npm's workspace-local placements keep the top-level slot with a conflicting root copy re-nested under the dependents npm resolved to it, and packages the manifest no longer lists are pruned instead of riding along. A tarball staged from a bun-hoisted install previously shipped `htmlparser2@10` next to a stale `entities@8` (compiling the engine failed with `No matching export ... for import "fromCodePoint"`), and the published tarball carried `zod@3` and `https-proxy-agent@7` under a manifest declaring `zod@4.4.3` and `https-proxy-agent@9.1.0` ([#1677](https://github.com/code-yeongyu/senpi/issues/1677)).
+### Removed
+
+## [2026.9.13-2] - 2026-09-13
+
+### Breaking Changes
+
+### Added
+
+
+- Added `PI_SESSION_CWD` and `PI_GOAL_STORE_FILE` to the extension session environment, exposing the session working directory and authoritative goal-store file to kernels and shell children while clearing inherited stale values (fixes #1663).
+
+
+
+- Added a pending-question queue in the interactive TUI: concurrent async questions stay open instead of superseding one another, the widget shows the pending count with `+N more`, `alt+down` cycles requests from an empty composer, and each request keeps its own draft and idle deadline ([#1645](https://github.com/code-yeongyu/senpi/issues/1645)).
+
+- Added a faster answer path: a valid digit on an empty composer answers the shown question (a single-question single-select request submits immediately), `alt+up` joins `alt+a` for opening it, `/answer` lists or opens a specific request, and typed or pasted text binds to one request with a `↳ reply to <header>` composer label ([#1645](https://github.com/code-yeongyu/senpi/issues/1645)).
+
+- Added question arrival signals: a `? <header>` terminal-title layer while a question is pending, a one-time terminal bell controlled by the new `askUser.bell` setting (default true), an `ask-user:asked` bus event with a matching `ask-user-asked` Notification hook, and `herdr:blocked` active/inactive pairs for questions and host dialogs. Reconnect replay and hydration do not repeat these signals ([#1645](https://github.com/code-yeongyu/senpi/issues/1645)).
+
+- Added compact answered-question chips in the transcript: an answered, commented, dismissed or timed-out question renders as `↳ <header>: <answer>` and expands to the original message on click ([#1645](https://github.com/code-yeongyu/senpi/issues/1645)).
+
+
+- Added the TUI foundation for host-leased regular-mode mouse clicks, with fail-closed frame anchoring and private cursor-position calibration; native selection and scrollback remain unchanged when no lease is active ([#1645](https://github.com/code-yeongyu/senpi/issues/1645)).
+
+- Added `@code-yeongyu/senpi/bun-runtime` with synchronous, once-per-isolate provider and OAuth registration for standalone Bun consumers; later provider overrides survive repeated registration ([#1656](https://github.com/code-yeongyu/senpi/issues/1656)).
+
+- Added optional read-only `ctx.steeringSignal` during tool execution so extensions can observe queued steering without cancelling work or consuming messages; follow-up input remains separate ([#1637](https://github.com/code-yeongyu/senpi/issues/1637)).
+
+- Added `scopedEntries: true` to the `resources_discover` event so a handler can feature-detect that the host accepts `{ path, scope }` entries and fall back to plain paths on older hosts (fixes #1655).
+
+- Added the `system` provenance scope for resources the harness itself provides: builtin and bundled extensions resolve to it in every runtime, a command-line package whose `package.json` declares `"pi": { "system": true }` keeps it through CLI precedence (the flag is ignored for packages installed through settings), and `resources_discover` results may now be `{ path, scope }` entries, with bare paths inheriting `system` from a builtin or system-package contributor and staying `temporary` otherwise (fixes #1640).
+
+### Changed
+
+- Changed `/answer skip` to also tell the agent that the user dismissed the question, instead of only showing a local notice ([#1645](https://github.com/code-yeongyu/senpi/issues/1645)).
+
+- Changed the interactive startup banner to leave system resources out of the compact `[Skills]`, `[Extensions]`, `[Prompts]` and `[Themes]` lines; a section with nothing else to show stays hidden until expanded (Ctrl+O or `--verbose`), where a `system` group now follows the project, user and path groups; autocomplete descriptions tag system resources `[s]` instead of `[t]` (fixes #1640).
+
+### Fixed
+
+- Fixed the goal monitor parking on the ask-user idle-timeout setting instead of the earliest pending question deadline, so a shorter request no longer waits for a longer one; typing in an answer now extends that park without adding continuation prompts ([#1645](https://github.com/code-yeongyu/senpi/issues/1645)).
+
+- Fixed shared RPC hosts expiring an old idle window after a short readiness connection, which could remove the Windows named pipe before the client attached (part of #1290).
+- Fixed missing Bedrock, Cursor, and Devin implementations in relocated standalone binaries by registering bundled modules in both the launcher and shared-session workers ([#1656](https://github.com/code-yeongyu/senpi/issues/1656)).
+- Fixed the ask-user question dialog carrying a committed own-answer into the next question: after answering a question with typed text, the next question's editor no longer shows the previous answer's text and pressing Enter again no longer submits it as the next question's own answer.
+- Fixed the remaining focus traps in the ask-user question dialog: committing an own answer now lands on the next question's option list instead of leaving the editor open; Up/Down, Tab/Shift+Tab and Backspace-on-empty leave the own-answer editor (Left/Right move its cursor); the Submit tab's review rows are navigable (Up from the comment highlights the last answer, Enter on a row jumps back to that question, Left/Right move the comment cursor once it has text); Backspace on the option list clears the answer instead of opening the editor; Esc inside the own-answer editor of an async question returns to the options instead of collapsing it; and re-expanding an async question restores its draft answers and comment.
+
+### Removed
+
+## [2026.9.13] - 2026-09-13
+
+### Breaking Changes
+
+### Added
+
+- Added the `Notification` hook event to builtin hooks v1 for live and resumed ask-user question settlements, so timeouts and answers can trigger trusted user-defined commands while hooks is enabled (for example desktop or mobile push on `ask-user-timeout`). Notification matchers are ignored; cancellation does not notify, and asynchronous configuration/trust reads and command execution do not delay settlement.
+
+### Changed
+
+### Fixed
+
+- Fixed `bun add @code-yeongyu/senpi` failing with `No version matching "^<version>" found for specifier "@earendil-works/chord"`. The bundled chord workspace had been stamped with the fork's CalVer, so the packaged manifest (and the published `@code-yeongyu/senpi-agent-core` manifest) declared a chord range that no registry version answered. chord is not modified from upstream, so it now keeps upstream's own `0.85.1` release identity and its declared edges pin that exact published version; the bundled copy still ships and shadows it at runtime (fixes #1632).
+
+### Removed
+
+## [2026.9.12-3] - 2026-09-12
+
+### Breaking Changes
+
+### Added
+
+- Added `ctx.modelRegistry.stream()` and `streamSimple()` for extension model calls through configured providers with resolved authentication ([#8964](https://github.com/earendil-works/pi/issues/8964)).
+- Added per-model `reserveTokens` and `keepRecentTokens` settings through `compaction.modelOverrides`, with ordinary compaction settings as fallback; `compaction.model` still selects the summarization model ([#8133](https://github.com/earendil-works/pi-mono/issues/8133)).
+- Added five-times-faster mouse wheel scrolling while holding Alt in fullscreen mode ([#9166](https://github.com/earendil-works/pi/pull/9166) by [@xl0](https://github.com/xl0)).
+- Added a clickable "Jump to latest message" label with the `tui.altScreen.bottom` shortcut to the fullscreen transcript while it is scrolled up ([#9080](https://github.com/earendil-works/pi/pull/9080) by [@rwachtler](https://github.com/rwachtler)).
+
+- Added two chord-free ways to open a pending async ask-user question: Enter on an empty editor and the `/answer` command (which reports `No question is pending.` when there is nothing to open), so the question stays reachable when a terminal, multiplexer or another keymap swallows the shortcut.
+- Added the `app.question.answer` keybinding (default `alt+a`, `option+a` on macOS): the async ask-user shortcut can now be rebound in `keybindings.json`, is listed in `/hotkeys` and `docs/keybindings.md`, and the widget hint follows the configured chord (fixes #1623).
+
+### Changed
+
+- Moved compaction, branch summarization, and retry spinners into the editor border alongside the working indicator. Custom editors use the same embedding opt-in (`embedWorkingStatus`) for all status spinners.
+- Enabled strict-prefer JSON-schema sampling by default for built-in `read`, `bash`, `powershell`, `edit`, and `write` tools, without requiring the experimental tool-sampling flag. Extensions can re-register tool definitions with `constrainedSampling: false`.
+- Reduced fullscreen transcript search latency on large transcripts by caching unchanged search results, indexing ASCII runs, and limiting highlight work to visible matches ([#8800](https://github.com/earendil-works/pi/pull/8800) by [@cristinaponcela](https://github.com/cristinaponcela)).
+- Upstream's experimental server, client, and plugin sources ship source-only through `pi-test.sh`; they are not part of the published package. The supported local SDK, the `./client` entry point, and the stdio RPC API are unchanged.
+
+- The async ask-user widget above the editor now shows the pending question itself: the first unanswered question with its options (and how many more wait behind it), one truncated line each, moving on to the next unanswered question when a partial draft collapses; on macOS the Option-composed glyph accepted for the shortcut follows the bound letter instead of being fixed to `å`/`Å`.
+
+### Fixed
+
+- Capped agent-level retry backoff at `retry.maxAgentDelayMs` (60s by default) so long retry runs stay responsive during prolonged transient outages; the fork's retry profiles and jitter still shape the delay under that ceiling ([#8826](https://github.com/earendil-works/pi/issues/8826)).
+- Fixed direct RPC `steer` and `follow_up` commands bypassing extension `input` handlers and skill or template expansion ([#8718](https://github.com/earendil-works/pi/issues/8718)).
+- Fixed premature missing-model errors after login by waiting for catalog discovery. Radius now defaults to `balanced`, falling back to the first available Radius model when needed.
+- Fixed extension tools without parameter schemas to be rejected during registration instead of breaking provider requests ([#9300](https://github.com/earendil-works/pi/issues/9300)).
+- Fixed configurable save keybindings in the model and thinking selectors ([#9149](https://github.com/earendil-works/pi/pull/9149) by [@rwachtler](https://github.com/rwachtler)).
+- Fixed mouse hover changing selection and recentering autocomplete and settings lists, causing clicks to target a different item.
+- Fixed OpenAI Codex SSE parsing to process terminal events that are not followed by a blank line ([#9047](https://github.com/earendil-works/pi/issues/9047)).
+- Fixed skills being unavailable when Bash is the only enabled tool ([#8552](https://github.com/earendil-works/pi/pull/8552) by [@xl0](https://github.com/xl0)).
+- Fixed image orientation detection skipping EXIF data after non-EXIF APP1 segments ([#8616](https://github.com/earendil-works/pi/pull/8616) by [@wutongyuonce](https://github.com/wutongyuonce)).
+- Fixed imported sessions overwriting an existing session with the same filename ([#8985](https://github.com/earendil-works/pi/pull/8985) by [@wutongyuonce](https://github.com/wutongyuonce)).
+- Fixed session forks losing their compaction boundary ([#8990](https://github.com/earendil-works/pi/pull/8990) by [@acmerfight](https://github.com/acmerfight)).
+- Fixed managed `fd` and ripgrep downloads on Linux musl systems ([#9070](https://github.com/earendil-works/pi/pull/9070) by [@Charlie0113-T](https://github.com/Charlie0113-T)).
+- Fixed managed `fd` and ripgrep downloads requiring the GitHub Releases API ([#8708](https://github.com/earendil-works/pi/pull/8708) by [@Terminator666666](https://github.com/Terminator666666)).
+
+- Fixed native prompt-preset matching for Devin SWE-2 effort variants so `swe-2-high`, `swe-2-max`, `swe-2-low`, and `swe-2-high-lite` resolve to the Kimi K3 preset; the rejected bare `swe-2` id remains unmatched.
+
+### Removed
+
+## [2026.9.12-2] - 2026-09-12
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+- Fixed Cursor requests losing whole conversation turns: admission enforced a fixed 50 KB aggregate cap and deleted the oldest turns when blanking tool results was not enough, so a 1M-token model kept roughly 6K tokens of history and an early instruction could disappear before the model saw it. The aggregate budget now follows the model context window (measured over what Cursor actually replays to the model), only tool result bodies are shrunk, and a history that still exceeds the budget is sent as-is for the existing overflow-to-compaction path to handle ([#1603](https://github.com/code-yeongyu/senpi/issues/1603)).
+- Fixed a long-lived RPC session dying with `session_path_in_use` after 64 session replacements: session-write grants are now bound to the writers that still exist, so a replaced session file is released as soon as the worker reports its new one. A superseded path can be reopened in a new worker instead of staying blocked for the host's lifetime, opening an explicit session file no longer burns a second phantom grant, and an exhausted per-worker budget is reported as the distinct `session_reservation_limit` (fixes #1612).
+
+- Fixed the async ask-user widget's advertised `option+a` shortcut doing nothing in macOS terminals that let Option compose characters (the Terminal.app, iTerm2, Ghostty and kitty defaults): on macOS the composed `å`/`Å` glyphs now expand the pending question too, `alt+a` keeps working everywhere, and other platforms keep treating those glyphs as text (fixes #1620).
+
+### Removed
+
+## [2026.9.12] - 2026-09-12
+
+### Breaking Changes
+
+### Added
+
+- Added Devin router models: a Cascade model router such as `adaptive` is resolved through `AssignModel` before every turn, and the assigned model uid plus its assignment JWT ride on the chat request, so the server-side router picks the model instead of the request failing on the router uid.
+- Added inline images on Devin turns: images attached to a user prompt or returned by a tool now travel in the Cascade request instead of being dropped to text.
+
+### Changed
+
+- Devin model discovery now announces the Devin CLI's dev-channel `chisel` identity and requests every native display slot, filters the internal quick-review and default-only slots, marks server-side routers, and reads the account's context window, output cap, cost and image/tool support from the catalog the way the released client does. The bundled seed now lists the plan-available SWE-2 effort lanes (`swe-2-high`, `swe-2-max`, `swe-2-low`, `swe-2-high-lite`) beside SWE-1.6; the bare `swe-2` uid, which Cascade rejects with `permission_denied`, is gone.
+
+### Fixed
+
+- Fixed Devin chat failing with `Devin request failed (HTTP 404): {"detail":"Not Found"}` after a successful login: the OAuth login host (`api.devin.ai`) was overlaid onto the Cascade model host, so every `GetChatMessage` was posted to the REST API instead of `server.codeium.com` (fixes #1615).
+- Fixed Devin turns being rejected with an opaque `invalid_argument` once they reached the right host: the transport now mints the account's user JWT through `GetUserJwt` before every turn and follows the API host that call names, presents the released Devin CLI identity (`devin-cli` / `chisel` 3000.6.2) instead of a dev-channel one, carries the user JWT on the correct protobuf field (it was serialized as `force_team_id`), sends UUID-shaped conversation, execution and message ids instead of raw strings, and uses the released CLI completion configuration (a temperature of exactly 0 is refused by Cascade and is now clamped).
+- Fixed Devin tool calls losing their id mid-stream: Cascade sends the id only on the first argument chunk, and later chunks were opened as separate nameless tool calls, so file reads, shell commands and edits never executed. Chunks now merge into one call whose arguments accumulate across frames.
+- Fixed Devin rejections being reported as an empty successful turn: a Connect error trailer (`invalid_argument`, `permission_denied`, ...) now terminates the turn as an error carrying the server's code and message.
+- Fixed Devin model discovery answering HTTP 415: the unary `GetCliModelConfigs` call now sends a bare `application/proto` body like the CLI instead of a Connect streaming frame.
+
+### Removed
+
+## [2026.9.11] - 2026-09-11
+
+### Breaking Changes
+
+### Added
+
+- Added the Devin (Cognition) Cascade model transport: after signing in with Devin OAuth you can select a Devin model and stream completions through the native `devin-agent` Connect/protobuf protocol, with text, thinking, tool calls, usage and stop reasons mapped natively, plus credential-scoped model discovery that keeps the bundled seed when discovery is unavailable (fixes #1604).
+
+- Added Devin (Cognition) OAuth login: sign in through Devin's CLI authorization flow (PKCE S256, loopback callback on `127.0.0.1:59653`, state validated before the code is spent) and senpi stores the issued CLI token with its JWT-derived expiry (fixes #1601).
+
 - Branded builds can provide an absolute changelog path and authored version, with source-isolated seen-version tracking and interactive changelog rendering; engine changelog notifications retain their existing link rewriting and install telemetry behavior (fixes #1583).
 
 - Added the `deepseek-v4-1-flash` prompt preset for DeepSeek V4.1 Flash: it resolves every published id shape (`deepseek-flash`, `deepseek-v4.1-flash`, `deepseek/deepseek-v4.1-flash`, `deepseek-ai/DeepSeek-V4.1-Flash`, fireworks' `deepseek-v4p1-flash`, venice's `deepseek-v4-1-flash`) and the official DeepSeek provider's retired `deepseek-v4-flash` / `deepseek-v4-flash-vision-exp` aliases, which the DeepSeek API now serves with V4.1 Flash; the same alias on any other provider keeps the V4 Flash preset. The preset carries the shared core and the eval-routing stance only - none of the V4 Flash repair rules, which were written against V4-Flash-0731 transcripts and do not apply to the re-trained model ([#1574](https://github.com/code-yeongyu/senpi/issues/1574))
@@ -13,10 +327,14 @@
 
 ### Changed
 
-- `update_goal` with status `blocked` is now rejected while a live resumption channel (monitor, background session, detached eval cell, child task, or pending question) can still deliver, and again until the same blocker has survived three goal turns since the goal became active or the user last spoke; the goal continuation prompt states both rules, declares retries unbounded, and requires the completion audit to match verification scope to requirement scope. `create_goal` now carries a decision rule for work that outlives the turn instead of "only when explicitly requested".
+- The goal continuation prompt and the `update_goal` tool description now spell out when a goal may be marked blocked: never while a live resumption channel (monitor, background session, detached eval cell, child task, or pending question) can still deliver, and not until the same blocker has survived three goal turns since the goal became active or the user last spoke. Both surfaces declare retries unbounded and require the completion audit to match verification scope to requirement scope, and `create_goal` now carries a decision rule for work that outlives the turn instead of "only when explicitly requested". The transition itself stays model-controlled: `update_goal` enforces only that a `blocked` call carries a reason, so a model that judges the audit passed is never mechanically refused.
 - The GPT-6 Astra preset drops its three-attempt failure cap for an unbounded-retry rule that widens the source on an empty lookup, ends a turn only when a pending handle will wake the session, requires a named next step to be taken in the same turn, and defaults its question tool to the non-blocking mode.
 
 ### Fixed
+
+- Image-heavy `/resume` sessions no longer reparse the complete JSONL once per evicted resident string; one ordered materialization pass performs one authoritative history load while preserving transcript contents and branch state ([#1407](https://github.com/code-yeongyu/senpi/issues/1407))
+
+- A shared RPC host is no longer torn down because its own process-identity probe was starved. A host we spawned that is alive and answering its socket is registered with a guard-less pidfile, and a record without an identity guard reads as unknown ownership everywhere, so it can neither claim a host nor authorize a signal; a later ensure that cannot verify it simply starts a fresh host. On a loaded Windows machine, where every `Get-CimInstance` attempt can exceed its timeout, session start no longer fails with `started but its process identity stayed unreadable`.
 
 - Windows RPC host ownership checks no longer treat a temporarily empty process-identity probe
   for a live PID as evidence that the shared host is dead. Compatible endpoints are reused before
@@ -33,7 +351,10 @@
 - A provider-owned login pool is merged onto the stored pool at commit time instead of overwriting it with the pre-browser-flow snapshot, so a sibling account's rotated refresh token and rate-limit block survive another account's interactive login.
 - The Claude SDK lane's session-lock and bare `invalid_request` remint, and its `Provider is not configured:` fallback exclusion, are scoped to that provider: provider-agnostic stream stalls keep consuming the shared same-model retry budget and still escalate to the configured fallback chain, and another provider's auth miss or `invalid_request` still hops the chain.
 - OAuth login no longer paints two live `>` prompts when the browser callback finishes before the paste-code field is submitted, and an interleaved waiting or info step replaces (never duplicates) the live `(to cancel)`/`(to close)` hint row.
-- Native image generation is no longer refused for official OpenAI Codex OAuth sessions: the `openai-codex-responses` transport on the exact `chatgpt.com` host now passes the native image gate without changing the model's API or base URL, and the bundled `gpt-image-gen` skill is contributed whenever native generation is active, even without client image credentials; proxies, host lookalikes, malformed URLs, explicit opt-out, and the global disable flag keep their prior behavior.
+- A Windows RPC reuse probe registers its socket error listener before it writes the named-pipe handshake, so a pipe an idle host removed while the probe was in flight is observed as "no existing host" and the caller starts a fresh one, instead of the `ENOENT` escaping the probe and failing the session start ([#1593](https://github.com/code-yeongyu/senpi/pull/1593)).
+- A terminal provider policy rejection now blocks the active goal instead of queuing automatic recoveries that cannot succeed, and the unstructured Codex diagnostic (`This request was blocked by our safety systems`) is trusted only when the message carries the Codex responses api id, so a provider-agnostic "Provider is not configured" style refusal from another provider or gateway keeps its ordinary provider and system recovery; the api id is pinned against the shipped model catalog so renaming it there cannot silently disarm the guard ([#1520](https://github.com/code-yeongyu/senpi/issues/1520) by [@rlaope](https://github.com/rlaope)).
+- A persisted Claude SDK binding whose prompt or toolset drifted after a stream-start timeout now forks the stored session at its last assistant UUID instead of flattening megabytes of transcript into a fresh request, and the timeout and a bare `invalid_request` remint the same model instead of hard-hopping onto an unauthenticated gateway route ([#1304](https://github.com/code-yeongyu/senpi/pull/1304) by [@eddieparc](https://github.com/eddieparc)).
+- Auth and cached provider-settings reload detection now uses file content revisions instead of filesystem mtimes, so two rewrites inside one filesystem timestamp tick are still observed and the session picks up the newer credentials deterministically.
 
 ### Removed
 
@@ -46,10 +367,6 @@
 ### Changed
 
 ### Fixed
-
-- Auth and cached provider-settings reload detection now uses file content revisions instead of filesystem mtimes, so rapid same-tick rewrites are observed deterministically.
-
-- A provider-agnostic "Provider is not configured" style refusal no longer ends a goal as a Codex policy rejection. The gate now requires the Codex responses api id, so another provider or gateway emitting the same sentence keeps provider and system recovery instead of blocking the goal; the api id is pinned against the shipped model catalog so renaming it there cannot silently disarm the guard ([#1520](https://github.com/code-yeongyu/senpi/issues/1520))
 
 - A bare `.` submitted on a session that already has messages no longer renders as a user message in the TUI. It stays the manual-continue shortcut the session delivers as a hidden continuation, so nothing is painted for it while idle or while steering an active turn; a `.` on an empty session and a `.` carrying image attachments remain ordinary user input ([#1569](https://github.com/code-yeongyu/senpi/issues/1569))
 

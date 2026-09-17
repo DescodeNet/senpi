@@ -1,3 +1,564 @@
+## 2026-09-17 - Skill mentions render bold in the composer, transcript lists every skill (senpi#1778)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/theme/theme.ts`: optional `skillMention` theme color (falls back to `mdLink`); `getEditorTheme().mention` renders a resolved `$skill` token bold in that color. `packages/coding-agent/src/modes/interactive/theme/theme-json.ts` and `packages/coding-agent/src/modes/interactive/theme/theme-schema.json` accept the optional key.
+- `packages/coding-agent/src/modes/interactive/components/skill-invocation-message.ts`: the collapsed row lists every invoked skill (`[skill] a, b`) and the expanded view shows one name header and body per skill, from `ParsedSkillBlock.skills`.
+
+### Why
+
+- senpi#1778: Codex renders bound skill mentions in a distinct style; multi-skill prompts showed only the first skill in the transcript.
+
+### Why an extension could not handle it
+
+- Editor theme wiring and the built-in transcript renderer are host-owned.
+
+### Expected merge conflict zones
+
+- LOW: `ThemeColor` union / fallback tables; `updateDisplay()` in the skill component.
+
+## 2026-09-16 - Live rate readout removed from the working line (senpi#1759)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/working-status.ts`: the optional live-rate parameter and the helper that rendered it are removed; the suffix is again `(<elapsed> - <key> to interrupt)`.
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: the per-turn rate meter, its rebuild at assistant `message_start`, the `message_update` unit recording, the reader the working line called, and the notice box for the agent loop's rate verdict are removed.
+
+### Why
+
+- The readout existed only to make that verdict observable while it was measured. The guard aborted healthy turns and was withdrawn (senpi#1759), leaving a per-delta rate as noise on every turn; end-of-turn rate is still reported by the builtin TPS extension.
+
+### Why an extension could not handle it
+
+- The working line and its animation frames are owned by interactive mode; extensions can only post notifications after the turn ends.
+
+### Expected merge conflict zones
+
+- LOW: the working-status suffix helper and the `message_start` / `message_update` cases in `interactive-mode.ts` are back to their pre-guard shape.
+
+## 2026-09-16 - Stall transcripts read as stalls (senpi#1740)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/components/assistant-render-descriptors.ts`: the `error` stop-reason branch routes `message.errorMessage` through `describeProviderStallForUser` first and prints that sentence for a provider-stream stall, falling back to the previous `Error: <errorMessage>` line for everything else. The branch is now a block with two early `break`s (tool calls, server-fallback diagnostic) instead of one negated condition; the descriptors it emits are unchanged in kind and order. No recovery advice is printed here - the turn may still be retrying.
+
+### Why
+
+- senpi#1740: the transcript printed `Error: Provider stream start timed out after 180000ms (raise streamStartTimeoutMs ...)` for every stalled attempt, including attempts a retry or a fallback model later recovered, so the watchdog wording was what the user read as the answer.
+
+### Why an extension could not handle it
+
+- Assistant bubbles are built by the host renderer; an extension cannot rewrite a descriptor the host already emitted.
+
+### Expected merge conflict zones
+
+- LOW: the `case "error"` arm of `createAssistantRenderDescriptors` and one import block.
+
+## 2026-09-16 - /rename session command
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts` handles `/rename [name]` and the `/name` alias: an argument sets the current session name immediately, and a bare command (or `app.session.renameCurrent`) opens an inline editor prefilled with the current name (Enter commits, Esc cancels, empty names are rejected).
+- `packages/coding-agent/src/modes/interactive/components/extension-input.ts` accepts `initialValue` and types it into the input so the cursor lands at the end of the prefill.
+- `packages/coding-agent/src/modes/interactive/tips/catalog/session-tips.ts` points the session-name tip at `/rename [name]`.
+
+### Why
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts` owns the composer, slash-command dispatch, and session-name writes, so the inline rename editor has to live there.
+- `packages/coding-agent/src/modes/interactive/components/extension-input.ts` is the existing single-line overlay the host already swaps in for extension prompts; rename reuse needs a prefill without moving the cursor to column 0.
+- `packages/coding-agent/src/modes/interactive/tips/catalog/session-tips.ts` is the startup-tip catalog users see for session labeling.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts` intercepts `/name` before extension commands run; an extension cannot replace that builtin or bind `app.session.renameCurrent` on the default editor.
+- `packages/coding-agent/src/modes/interactive/components/extension-input.ts` is the host overlay widget; extensions cannot add `initialValue` to it.
+- `packages/coding-agent/src/modes/interactive/tips/catalog/session-tips.ts` is a host-owned tip catalog.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: `app.session.resume` action registration, the `/name` slash-command branch, and `handleNameCommand`.
+- `packages/coding-agent/src/modes/interactive/components/extension-input.ts`: `ExtensionInputOptions` and Input construction.
+- `packages/coding-agent/src/modes/interactive/tips/catalog/session-tips.ts`: the `session-name` tip render string.
+
+## 2026-09-14 - Clickable-question guidance and multiplexer QA (#1645)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/tips/catalog/input-tips.ts` adds one clickable-question tip. TUI, keyboard and settings guides describe scoped capture, selection bypass, fail-closed geometry and tmux's out-of-band cursor source.
+- herdr 0.9.0 passes outer SGR clicks on viewport-filled frames and all question keyboard paths; the builtin reports blocked then working/idle. Fresh short frames write `ESC[?6n` with no private reply: outer `ESC[<0;27;25M` + `ESC[<0;27;25m` did not answer at 120x40, whereas viewport `ESC[<0;27;34M` + `ESC[<0;27;34m` did. Follow-up #1688 tracks that limitation; no unsafe anchor fallback was added.
+
+### Why
+
+- Users need to know when capture is active and how to retain terminal-native selection or answer by keyboard when a multiplexer cannot calibrate a short frame.
+
+### Why an extension could not handle it
+
+- The host owns the built-in tip catalog and pending-question mouse leases. Terminal calibration lives below extension APIs; the herdr limitation is documented, not hidden by extension workarounds.
+
+### Expected merge conflict zones
+
+- The input-tip catalog and mouse/question paragraphs in the public guides. Defaults and keyboard bindings are unchanged.
+
+## 2026-09-14 - Host-owned pending-question mouse capture (senpi#1645)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts` owns one pending-question capture lease for the queue/blocking surface and a regular-mode always lease when configured. It releases capture during suspend, external editing, renderer replacement and shutdown, and reapplies intent after start. Widget clicks expand/select the shown request and synchronously write its highlighted selection before single-question submission.
+- `packages/coding-agent/src/modes/interactive/components/settings-selector.ts` exposes terminal.mouse with the shared value schema; the host recreates the renderer on a live change so off also disables fullscreen tracking. `tui-renderer.ts` forwards the mouse constructor option.
+
+### Why
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts` must preserve capture intent across new renderer instances without enabling mouse for idle regular sessions or leaving it enabled during terminal handoff.
+- `packages/coding-agent/src/modes/interactive/components/settings-selector.ts` must make the capture policy discoverable and reversible in the existing settings surface.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts` owns renderer replacement, terminal handoff and the question queue; extensions cannot safely lease the terminal across those boundaries.
+- `packages/coding-agent/src/modes/interactive/components/settings-selector.ts` owns the built-in settings list and cannot be augmented by the question extension.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: init/switchTuiMode, question mounting/refresh, suspend/external-editor handoffs and settings callbacks.
+- `packages/coding-agent/src/modes/interactive/components/settings-selector.ts`: settings config/callbacks, terminal section and change dispatch. No changes to the default renderer or keyboard bindings.
+
+## 2026-09-14 - Expanded question mouse actions (senpi#1645)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/components/ask-user-question.ts` routes committed primary option rows, own-answer and Submit through mouse regions; descriptions remain inert. Tab labels now have width-aware recorded spans in `ask-user-question-mouse.ts`. Presses claim a target without selecting, while one click activates; Input retains caret placement and the parent retains keyboard focus.
+
+### Why
+
+- The expanded surface needs the same direct choices as the collapsed widget, including multi-select toggles and explicit review before submission.
+
+### Why an extension could not handle it
+
+- The built-in component owns its per-question state, dynamic description rows and inline inputs.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/interactive/components/ask-user-question.ts`: child mounting and updateAll. Keyboard dispatch and response builders are unchanged; helper modules are fork-owned.
+
+## 2026-09-14 - Clickable pending-question widget (senpi#1645)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/components/ask-user-async-widget.ts` renders sanitized, width-bounded option buttons with two-cell gaps, wrapping between buttons. It records the emitted spans and claims left presses without activating; single clicks route option, own-answer, expand and queue-next callbacks. The host can enable a terminal-specific selection-bypass hint.
+- Visibility coverage now asserts every wrapped option remains available rather than pinning the former single truncated options line. Keyboard behavior is unchanged.
+
+### Why
+
+- Pending choices should expose direct click targets without guessing columns from repeated labels or activating on a drag.
+
+### Why an extension could not handle it
+
+- The host-owned widget owns its rendered cells and hit testing. An extension cannot attach geometry to its committed layout.
+
+### Expected merge conflict zones
+
+- The fork-owned widget render and countdown update methods; no renderer or keyboard-dispatch changes in this increment.
+
+## 2026-09-14 - Tip lines keep one blank line above them (senpi#1680)
+
+### What changed
+
+- New `packages/coding-agent/src/modes/interactive/tips/tip-line.ts` appends a tip as a `Spacer(1)` followed by its `Text`, so every surface that shows a tip renders one blank line above it.
+- `packages/coding-agent/src/modes/interactive/tips/startup-header.ts` and both working-tip paths of `showStatusIndicator` in `packages/coding-agent/src/modes/interactive/interactive-mode.ts` (embedded spinner and standalone status row) append through it instead of adding the tip `Text` directly.
+
+### Why
+
+- The dim tip read as a continuation of the block above it: glued to the header's last line at startup, and to the last transcript entry while a turn runs.
+
+### Why an extension could not handle it
+
+- The startup header and the status row are host-owned containers; extensions cannot reposition their children.
+
+### Expected merge conflict zones
+
+- LOW: the `appendStartupHeader` body and the two tip `addChild` calls in `showStatusIndicator` (`packages/coding-agent/src/modes/interactive/interactive-mode.ts`); upstream pi ships no tips.
+
+## 2026-09-13 - Extension commands paint no optimistic user echo
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: the two `isExtensionCommand` branches in `setupEditorSubmitHandler` dispatch `session.prompt(text)` without `optimisticUserEchoes.begin()`, matching the command dispatch `handleFollowUp` already used. `handleFollowUp`'s streaming branch (Alt+Enter while the main turn streams) now dispatches extension commands the same way instead of painting the echo first.
+
+### Why
+
+- `AgentSession.prompt()` reports `promptDisposition("handled")` only after the command handler resolves, and a command never becomes a canonical user message. For a long-running command such as `/btw`, the `/btw <question>` bubble sat in the transcript for the whole side-query stream next to the panel that already shows the question, then vanished.
+
+### Why an extension could not handle it
+
+- The echo is painted by the host composer before the command reaches any extension; no extension API can suppress it.
+
+### Expected merge conflict zones
+
+- LOW: the `isExtensionCommand` branches in `setupEditorSubmitHandler` (upstream pi dispatches commands there without an echo).
+
+## 2026-09-13 - Acknowledge explicit question dismissal to the model (senpi#1645)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts` awaits the shown request's cancelled completion, then sends one existing-format dismissal frame from `/answer skip`. It steers into a streaming turn or follows up while idle. Ordinary abort/lifecycle cancellations remain silent in the builtin, so the explicit command cannot duplicate their delivery.
+- Keyboard tests assert the exact frame and request ID in both streaming states while a second request stays pending. Real CLI QA verifies the dismissed widget disappears, a no-answer chip appears, and the model receives a turn.
+
+### Why
+
+- The command previously only showed a local dismissal notice; the plan also requires the model to learn that the user dismissed the question.
+
+### Why an extension could not handle it
+
+- The host owns `/answer skip` and its shown request. A cancelled transport response alone cannot distinguish this explicit command from abort or teardown without changing the wire contract.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: handleAnswerCommand and the awaited `/answer` dispatch. Question wire shapes and the answer formatter remain unchanged.
+
+## 2026-09-13 - Compact answered-question transcript chips (senpi#1645)
+
+### What changed
+
+- New `packages/coding-agent/src/modes/interactive/components/ask-user-answer-chip.ts` recognizes the existing answer-frame prefix and renders muted, width-bounded rows per answer. A handled left press followed by a single click toggles the unchanged full body through MouseRegion; right/repeated clicks do not toggle. Hidden full-body rendering is invalidated and disposed by its owner.
+- `packages/coding-agent/src/modes/interactive/components/user-message.ts` branches only for framed answers, keeping ordinary user-message rendering and OSC markers unchanged. A one-line render is both first and last line, so its shell prompt-zone closing markers append instead of landing ahead of the opening marker; taller messages keep the existing off-line-end placement. `packages/coding-agent/src/modes/interactive/interactive-mode.ts` supplies display-only headers from the retained question entry, so comments and no-answer outcomes remain labeled during live rendering and saved-session replay.
+- A pre-production, fixed-color-mode snapshot pins ordinary-message bytes; model-facing frame bytes and real persisted answered/timeout replay are tested. Legacy frames without header metadata fall back to the request ID.
+
+### Why
+
+- A completed answer should be a compact receipt, not another large user bubble. Timeout and dismissal frames omit headers, so display metadata is needed without rewriting model input.
+
+### Why an extension could not handle it
+
+- The host-owned user-message renderer is used for both live and replayed transcripts; a question extension cannot replace its built-in branch or mouse target.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/interactive/components/user-message.ts`: constructor and rebuild; `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: plain user-message construction. The new chip module is fork-owned; builtin display metadata is tracked in `core/extensions/builtin/changes.md`.
+
+## 2026-09-13 - Question title, arrival bell and host dialog blocked signals (senpi#1645)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts` inserts the shown question header between tool and extension title layers, restores the title on settlement, and writes one BEL through the terminal abstraction for a fresh arrival when `askUser.bell` is enabled. Blocking questions use the same signals; components never write BEL.
+- The host question bridge compares the original asked timestamp with the UI attachment epoch to suppress bells for hydration, while repeated request IDs reuse completion. Host and local extension select/confirm/input/editor dialogs emit per-ID `herdr:blocked` pairs with cleanup in `finally`; question signals remain owned by the builtin.
+
+### Why
+
+- A pending question should remain visible in the terminal title without repeated alerts on reconnect, and dialog status must clear even when its promise rejects.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts` owns terminal title precedence, terminal output and host dialog mounting; an extension cannot reliably observe UI hydration or resolve the title layer itself.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: applyTerminalTitle, handleHostUiRequest, createExtensionUIContext, question mount/finish and refreshAsyncWidget. Transport response shapes remain unchanged.
+
+## 2026-09-13 - Shared answer chord and terminal-aware hint (senpi#1645)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/components/ask-user-answer-key.ts` selects the primary configured answer chord for hints, or its retained letter fallback under tmux, Apple Terminal, Warp and VS Code; Option-composed glyph matching remains active.
+- `packages/coding-agent/src/modes/interactive/components/ask-user-async-widget.ts` uses that hint. `packages/coding-agent/src/modes/interactive/interactive-mode.ts` and the input tip catalog list the queue and both configurable question actions; keybinding and TUI docs explain dequeue precedence and Windows/WSL behavior.
+
+### Why
+
+- Users need an arrow chord that does not remove the existing answer shortcut or consume a separate dequeue binding.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts` owns the app hotkeys display and pre-action question interception, while the widget owns its terminal-aware hint.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: hotkeys question rows only; handleDequeue is unchanged. The answer-key and widget hint helpers are fork-owned.
+
+## 2026-09-13 - Explicit bound replies and digit answers (senpi#1645)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts` intercepts valid option digits only on an empty unobstructed composer, forwards the digit through the mounted component, and binds printable input or bracketed paste to one request. `/answer` lists pending requests with a SelectList, `/answer <n>` opens one, and `/answer skip` dismisses the shown request.
+- `packages/coding-agent/src/modes/interactive/components/custom-editor.ts` gives the reply destination label precedence over embedded working status. Follow-up sends as chat; expiration preserves text and clears the binding with a notice.
+- `packages/coding-agent/src/modes/interactive/components/ask-user-question-keys.ts` submits an async single-question single-select digit/Enter immediately; `packages/coding-agent/src/modes/interactive/components/ask-user-question.ts` accepts an initial sub-question index for collapsed digit entry.
+- Intentional characterization flips: **(b2)** text present before arrival now stays chat; **(e)** async single-question digits now submit immediately. Every other characterization row stays pinned. Existing draft-oriented tests select with Space rather than a now-submitting digit; their draft assertions are unchanged.
+
+### Why
+
+- Numbered options must not become comment text, and later questions must never appropriate a draft or a reply already bound to another request.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts` owns pre-insertion editor dispatch and submission routing; `packages/coding-agent/src/modes/interactive/components/custom-editor.ts` owns the built-in border. Neither is replaceable through the question promise alone.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: question input interception, composer destination, answer command, finish and follow-up routing.
+- `packages/coding-agent/src/modes/interactive/components/custom-editor.ts`: renderTopBorder; `packages/coding-agent/src/modes/interactive/components/ask-user-question-keys.ts`: single-select submit guards; `packages/coding-agent/src/modes/interactive/components/ask-user-question.ts`: initial state.
+
+## 2026-09-13 - Request-id keyed pending-question queue (senpi#1645)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts` holds a FIFO map and a pinned shown request, removes only the settled id, preserves per-request drafts, and restores editor focus without expanding the next question. `app.question.next` cycles only from an empty, unobstructed composer.
+- `packages/coding-agent/src/modes/interactive/components/ask-user-async-widget.ts` shows the pending request count and next-question hint. The widget and `packages/coding-agent/src/modes/interactive/components/ask-user-question.ts` share an absolute countdown; an extension deadline makes it display-only. Only the mounted surface ticks.
+- All 18 characterization rows remain unchanged and green in this increment.
+
+### Why
+
+- A second question must not cancel the first or steal focus, and re-rendering must not replace the extension's authoritative idle deadline.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts` owns the editor, widget slot, input interception, and overlay focus. The extension can provide its deadline but cannot queue these host-owned surfaces.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: question state fields, resetExtensionUI, showAsyncQuestion, refreshAsyncWidget, expandPendingQuestion, and composer comment routing.
+- `packages/coding-agent/src/modes/interactive/components/ask-user-async-widget.ts` and `packages/coding-agent/src/modes/interactive/components/ask-user-question.ts`: countdown construction and pending-count rendering.
+
+## 2026-09-13 - Ask-user overlay: no focus traps in the own-answer and Submit editors, draft restore on re-expansion (senpi#1641)
+
+### What changed
+
+- `components/ask-user-question-state.ts`: `advance()` and `switchTab()` route through `jumpToQuestion()` /
+  `enterSubmit()`, so moving to the next question always lands on its option list (focus `options`) instead of
+  leaving the own-answer editor open. New `submitRowIndex` highlights one review row on the Submit tab or the
+  comment editor (`commentRowIndex`, `isCommentFocused`), with `moveSubmitRow()` / `focusComment()`.
+  `leaveOwnAnswer(row)` closes the editor onto a chosen row, `clearAnswer()` drops a question's selection/text,
+  and `restoreDraft()` seeds selections, own texts and the comment from a `QuestionDraft`.
+- `components/ask-user-question-keys.ts`: own-answer editor exits — Up/Down save the text and return to the
+  option list (Up highlights the row above, Down keeps the own-answer row), Tab/Shift+Tab save and switch tab,
+  Backspace on an empty editor returns to the list, Esc discards and returns to the list in both modes;
+  Left/Right stay cursor movement. Submit tab — Up/Down walk the review rows and the comment editor, Enter on a
+  row jumps to that question, a printable character on a row types into the comment, Left/Right move the
+  comment cursor when it has text (tab switch only when empty or a row is highlighted), Backspace on an empty
+  comment moves to the last row. Option list — Backspace clears the active answer; the printable check no
+  longer admits DEL (0x7f), so Backspace never opens the own-answer editor.
+- `components/ask-user-question-render.ts`: review rows carry the `→` highlight; own-answer label and the
+  hints line describe the real exits (the single-line `Input` never supported the advertised `shift+enter`).
+- `components/ask-user-question.ts`: `AskUserQuestionOptions.initialDraft` seeds the state and the comment
+  `Input`; `commitOwnAnswer()` resets the editor (from senpi#1634); the comment `Input` is focused only while
+  the comment row is highlighted.
+- `interactive-mode.ts`: `expandPendingQuestion()` passes the pending `state.draft` as `initialDraft`, so an
+  async question re-expanded after Esc shows the selections and comment captured before the collapse.
+- Tests: `test/suite/ask-user-question-{own-answer-focus,submit-focus,reachability}.test.ts` (shared
+  `ask-user-question-focus-support.ts`); the reachability guard walks every key sequence up to depth 3 in both
+  modes and fails when Tab, Esc or Up is silently swallowed.
+
+### Why
+
+- After senpi#1576 the overlay still trapped focus: the own-answer editor kept focus on the next question,
+  Up/Down/Tab did nothing inside either editor, Left/Right switched tabs from the comment, Backspace opened the
+  editor from the option list, and an async re-expansion lost the draft. The user report was "once you are in
+  the text box you cannot get out, and pressing Up on the Submit tab feels like it should do something".
+
+### Why an extension could not handle it
+
+- The question overlay is an in-tree interactive component driven by `interactive-mode.ts`; extensions only
+  receive the resolved `QuestionResponse` and cannot change the key model or the focus state of the TUI.
+
+### Expected merge conflict zones
+
+- `components/ask-user-question-keys.ts` `handleOwnAnswerKey` / `handleSubmitKey` and
+  `ask-user-question-state.ts` `advance()` if upstream reworks the ask-user key model; the async single-question
+  guard (`waitForAnswer && questions.length === 1`) is intentionally unchanged pending the pending-blocks plan.
+
+## 2026-09-13 - Compact startup banner omits system resources; `system` group in the expanded listing (senpi#1640)
+
+### What changed
+
+- `interactive-mode.ts`: `showLoadedResources` filters `system`-scoped skills, prompts, extensions and themes out of the compact `[Skills]` / `[Prompts]` / `[Extensions]` / `[Themes]` lists (`isSystemResource`), `formatCompactList` returns `""` for an empty list, and `addLoadedSection` builds a `LoadedResourceSection` (empty collapsed text when the compact body is empty) instead of an `ExpandableText` plus trailing `Spacer`. The bodies of `getDisplaySourceInfo`, `getScopeGroup`, `buildScopeGroups` and `formatScopeGroups` are gone: the first three private methods now delegate to `loaded-resource-scopes.ts`, `getScopeGroup` was removed outright, and `isPackageSource` delegates to `isPackageSourceInfo`.
+- `loaded-resource-scopes.ts` (new, fork-only): `ResourceScopeGroup` gains `system`, `GROUP_ORDER` is `project, user, path, system`, plus `isSystemResource`, `isPackageSourceInfo`, `getResourceScopeGroup`, `buildResourceScopeGroups`, `formatResourceScopeGroups` and `getDisplaySourceInfo` (which labels a `system` resource `system`), so the grouping logic is unit-testable outside `InteractiveMode`.
+- `components/loaded-resource-section.ts` (new, fork-only): the `LoadedResourceSection` container that renders nothing while collapsed with an empty body and adds its own `Spacer` when it has text.
+- `components/config-selector.ts`: `ResourceGroup.scope` is typed as `SourceScope` instead of the inline three-member union; behaviour is unchanged.
+- `interactive-mode.ts` `getAutocompleteSourceTag` and `loaded-resource-scopes.ts` `getScopeAutocompleteTag` (follow-up, senpi#1640): the `$skill` / slash autocomplete prefix is now exhaustive over `SourceScope`, so system resources show `[s]` instead of falling back to the temporary `[t]` tag.
+
+### Why
+
+- A distribution that ships its own builtin package filled the compact banner with resources the user did not add and cannot toggle, hiding the user's own skills and extensions in the noise. The expanded view (Ctrl+O / `--verbose`) still shows everything, under a `system` group after project, user and path.
+
+### Why an extension could not handle it
+
+- The startup banner is built inside `InteractiveMode.showLoadedResources` from the loader's resource lists; no extension hook can filter or regroup what it prints.
+
+### Expected merge conflict zones
+
+- MEDIUM: `showLoadedResources` (`formatCompactList`, `addLoadedSection` and the four compact-list call sites) and the removed `getDisplaySourceInfo` / `getScopeGroup` / `buildScopeGroups` / `formatScopeGroups` bodies in `interactive-mode.ts`, along with the new `loaded-resource-scopes.ts` and `loaded-resource-section.ts` imports.
+- LOW: the `ResourceGroup` interface and `SourceScope` import in `components/config-selector.ts`.
+
+## 2026-09-12 - Working/retry status cadence reads the O(1) entry count (senpi#1635)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: use `getEntryCount()` in
+  the hook-status timer, working indicator and retry indicator. Ticker tests cover the 999/1000
+  cadence boundary and zero history loads on a trimmed persisted session.
+
+### Why
+
+- These cadence decisions need a count, not the full history that `getEntries()` loads after trim.
+
+### Why an extension could not handle it
+
+- The timer and indicator constructors are internal to interactive mode.
+
+### Expected merge conflict zones
+
+- LOW: the three count-only cadence call sites.
+
+## 2026-09-12 - Upstream sync: status spinners in the editor border, mouse toggles, renderer-only tool cards
+
+### What changed
+
+- `components/custom-editor.ts` / `components/status-indicator.ts` / `interactive-mode.ts`: the base
+  editor opts in to `embedWorkingStatus`, so the working, retry and branch-summary indicators render
+  inside the editor's top border (upstream c1d4c8011 / 1d9787c11). The fork shimmer
+  (`formatWorkingStatusMessageFrame`, elapsed seconds, interrupt hint, large-session cadence) is the
+  text that lands in the border; the optional working tip stays as the only status-row line. The
+  compaction indicator keeps its own status row (single-row label + streamed preview, pinned by the
+  fork compaction suite). `clearStatusIndicator` reserves clear-on-shrink height only for rows that
+  were on screen, so an embedded spinner never leaves a two-row placeholder. Extension editors and
+  the Grok chrome editor do not opt in and keep the standalone row.
+- `interactive-mode.ts`: `createInteractiveTui` / `createInteractiveTuiReference` moved to
+  `tui-renderer.ts` (still re-exported); the fork's `ProcessTerminal({ onExternalStdoutWrite:
+  appendHiddenTuiStdout })` moved with them. The fullscreen dock comes from `chat-viewport.ts`, which
+  gained an optional `hookStatus` slot for the fork's tool-hook status rows. Scrollbar styling uses
+  the adopted `scrollbarTrack` / `scrollbarThumb` foreground tokens; `grok-day` / `grok-night` were
+  migrated (old thumb background became the track, thumb is the text colour).
+- `interactive-mode.ts`: tree navigation re-checks `session.isCompacting` after the summary dialog
+  and the streaming abort before touching another operation's UI (upstream 47acd8e6c, ported into
+  `runTreeNavigation`); provider login defers default-model selection until the catalog refresh
+  lands when the provider's default is not in the snapshot yet (upstream 9767ba275), keeping the
+  fork's persist-by-default `setModel`, system-prompt label, risky-model warning and the
+  cursor/`cursor-cli-oauth` `allowNetwork` refresh.
+- `components/tool-execution*.ts`: the card accepts `ToolRenderers` (a definition or a bare
+  renderer pair; `interactive-mode.ts` passes `withBuiltInRenderers(name, definition)`). The fork's
+  `ToolExecutionRenderer` keeps its own built-in fallback (`createAllToolDefinitions`, which still
+  carries `renderShell`). Left-clicking a finished classic card toggles expansion (upstream
+  71026970a) via a `MouseRegion` around each rendered slot.
+- `components/assistant-message.ts` / `assistant-render-descriptors.ts`: left-clicking a thinking run
+  toggles that run between its label and body; overrides are per run, cleared by
+  `setHideThinkingBlock`, and attached to the Markdown/Text child so the incremental reconciler is
+  unchanged.
+- `theme/theme.ts`: validation is always on. The TypeBox-compiled `validateThemeJson` lives in
+  upstream's `theme-json.ts` (schema now includes the optional `scrollbarTrack` / `scrollbarThumb`
+  tokens); `theme.ts` re-exports it and uses it as the default validator, with
+  `setThemeJsonValidator` kept as an override hook. Upstream made validation opt-in from `main.ts`,
+  which the fork does not do.
+- `components/model-selector.ts`: unchanged fork behaviour (confirm persists the default; no
+  separate `app.models.save` chord). Thinking and scoped-model selectors read their configurable
+  save bindings on open.
+
+### Why
+
+- Adopt upstream's border-embedded status, mouse interactions, renderer split and login/tree fixes
+  without losing the fork's shimmer, tips, compaction row, hook-status rows, paste pairing or theme
+  validation.
+
+### Expected merge conflict zones
+
+- MEDIUM: `showStatusIndicator` / `clearStatusIndicator` / `setEditorWorkingStatusIndicator` and
+  `completeProviderAuthentication` in `interactive-mode.ts`; `ToolRenderers` in
+  `components/tool-execution-types.ts`; the validator default in `theme/theme.ts`.
+
+## 2026-09-12 - Async ask-user shortcut accepts macOS Option-composed glyphs (senpi#1620)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/components/ask-user-async-widget.ts`: new
+  `matchesAskUserAnswerKey(data, platform)` keeps `alt+a` (`ESC a` / CSI-u alt) on every platform
+  and, on darwin only, also accepts the glyphs the `a` key types when the terminal lets Option
+  compose (`å`, `Å`, raw or as a kitty CSI-u printable). `ASK_USER_ANSWER_KEY` and the widget label
+  (`option+a` on darwin, `alt+a` elsewhere) are unchanged.
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: `handleAskUserShortcut` matches
+  through `matchesAskUserAnswerKey` instead of `matchesKey(data, ASK_USER_ANSWER_KEY)`.
+
+### Why
+
+- Terminal.app, iTerm2, Ghostty and kitty default to Option composing characters on macOS, so the
+  advertised `option+a` arrived as `å` and inserted text instead of expanding the pending question.
+
+### Why an extension could not handle it
+
+- The shortcut is consumed inside `CustomEditor.onExtensionShortcut` before extension shortcuts run,
+  and the async widget is interactive-mode state; no extension hook sees the raw editor input first.
+
+### Expected merge conflict zones
+
+- LOW: the `ask-user-async-widget.ts` import list and `handleAskUserShortcut` in
+  `packages/coding-agent/src/modes/interactive/interactive-mode.ts` (fork-only code).
+
+## 2026-09-12 - Async ask-user widget shows the question; rebindable shortcut and key-free paths (senpi#1623)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/components/ask-user-async-widget.ts`: the collapsed
+  widget renders four lines instead of one: `? Question pending (N unanswered) · <countdown>`, the
+  first unanswered question as `<header> — <question>`, its options as `1 A · 2 B · own answer`
+  (plus `+K more question(s)` when more wait), one `TruncatedText` line each, and a hint naming
+  every way in (`enter or <shortcut> to answer · /answer · or just type your reply`). The widget takes
+  the `QuestionRequest` and the live `QuestionDraft`, so a partial draft that collapses shows the next
+  unanswered question. `ASK_USER_ANSWER_KEY`, `renderAsyncQuestionLine` and `setUnanswered` are gone.
+- `packages/coding-agent/src/modes/interactive/components/ask-user-answer-key.ts` (new):
+  `ASK_USER_ANSWER_KEYBINDING = "app.question.answer"`, `matchesAskUserAnswerKey(data, platform,
+  keybindings)` resolving the chord through the `KeybindingsManager`, and `darwinOptionGlyphs(keys)`
+  mapping every bound `alt+<letter>` to its US-layout Option glyph pair (dead keys e/i/n/u excluded),
+  which generalizes the senpi#1620 `å`/`Å` acceptance to whatever letter the user binds.
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: `handleAskUserShortcut` delegates
+  to a new `expandPendingQuestion()`; the editor `onSubmit` calls it for an empty submission (Enter on
+  an empty editor opens the pending question, a no-op when nothing is pending); `/answer` is handled in
+  the text dispatch beside `/keybindings` and reports `No question is pending.` through `showStatus`;
+  `/hotkeys` lists `app.question.answer`.
+- `packages/coding-agent/src/modes/interactive/tips/catalog/input-tips.ts`: new `open-pending-question`
+  tip bound to `app.question.answer`.
+- Docs: `docs/tui.md` async-widget paragraph, `docs/keybindings.md` row for `app.question.answer`.
+
+### Why
+
+- The one-line widget only said that a question existed, so a pending question could sit through its
+  whole idle countdown unnoticed. The single `alt+a` chord was a constant outside the keybinding
+  system: not rebindable, absent from `/hotkeys`, and dead whenever a terminal, multiplexer or workspace
+  prefix claimed Option/Alt+A, with no chord-free way to open the overlay.
+
+### Why an extension could not handle it
+
+- The async widget, the pending-question state and the editor submit path are interactive-mode
+  internals; extensions reach neither the editor's empty-submission branch nor the overlay mount.
+  `/answer` itself is registered by the builtin ask-user extension (see `src/core/changes.md`) and
+  intercepted by interactive-mode the way `/keybindings` is.
+
+### Expected merge conflict zones
+
+- LOW: the ask-user import block, `refreshAsyncWidget`, `handleAskUserShortcut`, the empty-text guard
+  in `setupEditorSubmitHandler`, the `/keybindings` dispatch neighbour and the `/hotkeys` table in
+  `interactive-mode.ts` (fork-only code paths).
+
+## 2026-09-12 - Async ask-user shortcut accepts macOS Option-composed glyphs (senpi#1620)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/components/ask-user-async-widget.ts`: new
+  `matchesAskUserAnswerKey(data, platform)` keeps `alt+a` (`ESC a` / CSI-u alt) on every platform
+  and, on darwin only, also accepts the glyphs the `a` key types when the terminal lets Option
+  compose (`å`, `Å`, raw or as a kitty CSI-u printable). `ASK_USER_ANSWER_KEY` and the widget label
+  (`option+a` on darwin, `alt+a` elsewhere) are unchanged.
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: `handleAskUserShortcut` matches
+  through `matchesAskUserAnswerKey` instead of `matchesKey(data, ASK_USER_ANSWER_KEY)`.
+
+### Why
+
+- Terminal.app, iTerm2, Ghostty and kitty default to Option composing characters on macOS, so the
+  advertised `option+a` arrived as `å` and inserted text instead of expanding the pending question.
+
+### Why an extension could not handle it
+
+- The shortcut is consumed inside `CustomEditor.onExtensionShortcut` before extension shortcuts run,
+  and the async widget is interactive-mode state; no extension hook sees the raw editor input first.
+
+### Expected merge conflict zones
+
+- LOW: the `ask-user-async-widget.ts` import list and `handleAskUserShortcut` in
+  `packages/coding-agent/src/modes/interactive/interactive-mode.ts` (fork-only code).
+
 ## 2026-09-11 - Ask-user overlay uses an explicit question and submit flow
 
 ### What changed
@@ -607,3 +1168,32 @@
 
 - LOW: `AgentSessionEvent` model event union and `_cycleFavoriteModel`.
 - LOW: the interactive `handleEvent` switch.
+
+## 2026-09-12 - Upstream sync (upstream/main@71dca871) integration repairs
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/chat-viewport.ts`: the fullscreen dock gains an optional `hookStatus` component slot for the fork's tool-hook status rows.
+- `packages/coding-agent/src/modes/interactive/tui-renderer.ts`: the default terminal is `ProcessTerminal({ onExternalStdoutWrite: appendHiddenTuiStdout })` so stray stdout lands in the hidden TUI log.
+- `packages/coding-agent/src/modes/interactive/components/assistant-message.ts`: fork descriptor-based incremental reconciler (`createAssistantRenderDescriptors`, bounded render signatures, per-run thinking toggles) instead of upstream's rebuild-on-change component.
+- `packages/coding-agent/src/modes/interactive/components/custom-editor.ts`: fork prompt-glyph gutter with a minimum horizontal padding of 2 (`getPaddingX`/`setPaddingX` overrides) on top of upstream's `embedWorkingStatus` editor.
+- `packages/coding-agent/src/modes/interactive/components/index.ts`: exports the fork `FavoriteModelsSelectorComponent` and its callback/config types; `ScopedModelsSelectorComponent` is not exported.
+- `packages/coding-agent/src/modes/interactive/components/scoped-models-selector.ts`: the fork's simplified scoped selection (toggle from all-enabled starts a one-model list, no collapse-to-null normalization) with configurable `app.models.save`; upstream's rejected 6949 UX is not restored.
+- `packages/coding-agent/src/modes/interactive/components/status-indicator.ts`: fork loader-based indicators (`CompactionStatusReason` labels, single-row compaction status with streamed preview and cancellation hint, `renderInBorder` override, `IdleStatus.setHeight`).
+- `packages/coding-agent/src/modes/interactive/components/thinking-selector.ts`: the `xhigh` description reads "Extended reasoning (~32k tokens or native xhigh effort)".
+- `packages/coding-agent/src/modes/interactive/components/tool-execution.ts`: fork card (`ToolExecutionRenderer`, `GrokToolRow` presentation, progress rows, todo strike animation, image sidecar, bounded render signatures) accepting upstream's `ToolRenderers` and click-to-toggle.
+- `packages/coding-agent/src/modes/interactive/theme/theme.ts`: validation always on via `validateThemeJson` from `theme-json.ts` (re-exported; `setThemeJsonValidator` kept as an override hook), `grok-night`/`grok-day` shipped as built-ins with `scrollbarTrack`/`scrollbarThumb`, no `isLightTheme`.
+
+### Why
+
+- The fork's interactive chrome (Grok presentation, favorite-model selector, hidden stdout log, hook status rows, always-validated themes) sits on top of upstream's component set; these files are the overlap.
+
+### Why an extension could not handle it
+
+- Interactive components, the renderer factory and theme loading are private to the host; extensions render through them and cannot replace them.
+
+### Expected merge conflict zones
+
+- HIGH: `components/tool-execution.ts` and `components/assistant-message.ts` render paths; `components/status-indicator.ts` class set.
+- MEDIUM: `theme/theme.ts` validator and built-in theme loading; `components/scoped-models-selector.ts` toggle logic.
+- LOW: `chat-viewport.ts` options; `tui-renderer.ts` terminal construction; `components/index.ts` export list; `components/custom-editor.ts` padding overrides; `components/thinking-selector.ts` label text.

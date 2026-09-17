@@ -67,7 +67,7 @@ import type {
 	SessionManager,
 } from "../session-manager.ts";
 import type { SlashCommandInfo } from "../slash-commands.ts";
-import type { SourceInfo } from "../source-info.ts";
+import type { SourceInfo, SourceScope } from "../source-info.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import type { BashOperations } from "../tools/bash.ts";
 import type { EditToolDetails } from "../tools/edit.ts";
@@ -89,6 +89,7 @@ import type {
 } from "../tools/index.ts";
 import type { ReadClassifier } from "../tools/read-classifiers.ts";
 import type { McpServerDeclaration } from "./builtin/mcp/config-schema.ts";
+import type { ExtensionKernelTools } from "./kernel-tools-context.ts";
 
 export type { ExecOptions, ExecResult } from "../exec.ts";
 export type { AppKeybinding, KeybindingsManager } from "../keybindings.ts";
@@ -451,8 +452,12 @@ export interface ExtensionContext {
 	cwd: string;
 	/** Agent state directory (settings, logs, sessions) resolved for this session. */
 	agentDir: string;
+	/** Resolved paths of loaded extensions, including synthetic builtin/inline identifiers. */
+	readonly loadedExtensionPaths?: readonly string[];
 	/** Session manager (read-only) */
 	sessionManager: ReadonlySessionManager;
+	/** Absolute goal-store path for this session; reading it does not create the file. */
+	readonly goalStoreFile?: string;
 	/** Model registry for API key resolution */
 	modelRegistry: ModelRegistry;
 	/** Current model (may be undefined) */
@@ -476,6 +481,16 @@ export interface ExtensionContext {
 	isProjectTrusted(): boolean;
 	/** The current abort signal, or undefined when the agent is not streaming. */
 	signal: AbortSignal | undefined;
+	/**
+	 * Invocation-scoped notification that steering is queued. Never a cancellation signal.
+	 * Available during tool execution; follow-up messages do not trigger it.
+	 */
+	readonly steeringSignal?: AbortSignal;
+	/**
+	 * Transient parent JS kernel-tool capability. Present only while a supported
+	 * JavaScript eval owns the host-tool context; absent on older runtimes.
+	 */
+	readonly kernelTools?: ExtensionKernelTools;
 	/** Abort the current agent operation */
 	abort(source?: "user" | "system"): void;
 	/** Whether there are queued messages waiting */
@@ -687,7 +702,7 @@ export interface ToolRenderContext<TState = any, TArgs = any> {
 	spinnerFrame?: number;
 }
 
-export type ToolExposure = "direct" | "search";
+export type ToolExposure = "direct" | "search" | "eval";
 
 /**
  * Tool definition for registerTool().
@@ -701,6 +716,9 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	description: string;
 	/**
 	 * Initial model-exposure policy. Defaults to `"direct"`.
+	 *
+	 * `"eval"` means registered and active but withheld from the model whenever the eval tool is registered;
+	 * it remains callable as `tool.<name>()`.
 	 *
 	 * This is not a permission boundary: explicit `setActiveTools()` calls or host configuration may still activate
 	 * a search-exposed tool.
@@ -784,7 +802,8 @@ export function normalizeToolExposure(
 	searchGroup?: string;
 	allowLazyActivation: boolean;
 } {
-	const exposure: ToolExposure = definition.exposure === "search" ? "search" : "direct";
+	const exposure: ToolExposure =
+		definition.exposure === "search" || definition.exposure === "eval" ? definition.exposure : "direct";
 	return {
 		exposure,
 		searchText: exposure === "search" ? definition.searchText : undefined,
@@ -842,15 +861,29 @@ export interface ResourcesDiscoverEvent {
 	type: "resources_discover";
 	cwd: string;
 	reason: "startup" | "reload";
+	/**
+	 * Capability signal: this host accepts `{ path, scope }` entries in the result. Hosts that
+	 * predate scoped entries omit the field, so a handler that must run on both returns plain
+	 * paths when it is absent.
+	 */
+	scopedEntries: true;
 }
+
+/**
+ * A resource path contributed by `resources_discover`. A bare string inherits its scope from the
+ * contributing extension: `system` when that extension is builtin, or when it is a system package
+ * and the path lies inside the package; `temporary` otherwise. The object form pins the scope
+ * explicitly, e.g. `{ path, scope: "user" }` for user-owned data a system extension surfaces.
+ */
+export type ResourceDiscoverEntry = string | { path: string; scope?: SourceScope };
 
 /** Result from resources_discover event handler */
 export interface ResourcesDiscoverResult {
-	skillPaths?: string[];
-	promptPaths?: string[];
-	themePaths?: string[];
+	skillPaths?: ResourceDiscoverEntry[];
+	promptPaths?: ResourceDiscoverEntry[];
+	themePaths?: ResourceDiscoverEntry[];
 	/** Hook config paths discovered after initial session_start; visible to later hooks and reloads. */
-	hookPaths?: string[];
+	hookPaths?: ResourceDiscoverEntry[];
 }
 
 // ============================================================================
@@ -977,6 +1010,13 @@ export interface SessionShutdownEvent {
 	reason: "quit" | "reload" | "new" | "resume" | "fork";
 	/** Destination session file when shutting down due to session replacement. */
 	targetSessionFile?: string;
+	/**
+	 * Per-handler signal the host aborts when this handler exceeds
+	 * `sessionShutdownHandlerTimeoutMs`; teardown then continues without it.
+	 * Long shutdown work should observe it. Absent on hosts that predate the
+	 * shutdown handler budget.
+	 */
+	signal?: AbortSignal;
 }
 
 /** Fired when the user aborts the session outside an active agent run (retry backoff, compaction, or queued continuation), stopping in-flight work without an agent_end that carries abortSource. Extensions that track run-progress state (e.g. goal) use this to mark their state as user-interrupted. */

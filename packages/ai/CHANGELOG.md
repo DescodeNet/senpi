@@ -6,7 +6,172 @@
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.16-3] - 2026-09-16
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.16-2] - 2026-09-16
+
+### Breaking Changes
+
+### Added
+
+- `describeProviderStallForUser(errorMessage, options)` (`utils/retry.ts`, exported from the package root): turns a provider stream-stall watchdog message (stream-start, idle, WebSocket liveness or Responses completion) into one plain-language sentence naming the model, the stalled phase and the bound, optionally with the same-model attempts spent and the next step to take. Returns `undefined` for anything that is not a stall, so callers keep their verbatim error ([#1740](https://github.com/code-yeongyu/senpi/issues/1740)).
+
+- `EMPTY_RESPONSE_ERROR`, `EMPTY_TOOL_USE_ERROR`, `FORWARDED_EMPTY_RESPONSE_ERROR` and `FORWARDED_EMPTY_TOOL_USE_ERROR` (`utils/empty-response-errors.ts`, exported from the package root): the terminal error texts the pi-agent-core empty-assistant recovery wrapper produces, so the wrapper and the retry classifier share one definition ([#1733](https://github.com/code-yeongyu/senpi/issues/1733)).
+
+### Changed
+
+- `isRetryableErrorMessage` / `isRetryableAssistantError` classify `FORWARDED_EMPTY_RESPONSE_ERROR` and `FORWARDED_EMPTY_TOOL_USE_ERROR` as retryable, so a turn whose reasoning already streamed live before an empty stop is re-requested by the session's turn retry. The bounded "twice" variants stay non-retryable ([#1733](https://github.com/code-yeongyu/senpi/issues/1733)).
+
+### Fixed
+
+### Removed
+
+## [2026.9.16] - 2026-09-16
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.15-2] - 2026-09-15
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.15] - 2026-09-15
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+- Devin models no longer advertise a controllable thinking level: Cascade's chat protocol has no request-side thinking field (SWE-2 effort is selected through the lane uid), so the generic `/efforts`/`/reasoning` selector and the footer thinking suffix were a no-op second control. Streamed thinking output still renders; lane selection is the single effort control ([#1710](https://github.com/code-yeongyu/senpi/issues/1710)).
+
+### Removed
+
+## [2026.9.13-2] - 2026-09-13
+
+### Breaking Changes
+
+### Added
+
+- Added a Devin provider-module override and static Cursor/Devin public subpaths for standalone Bun consumers, keeping Node-only implementations outside browser-facing root exports ([#1656](https://github.com/code-yeongyu/senpi/issues/1656)).
+
+### Changed
+
+### Fixed
+
+- OpenAI Responses streams (SSE and WebSocket, every provider that shares the Responses processor) now treat silence after the last output item as a stall: once every `response.output_item.done` has arrived and no new item was added, `response.completed` must follow within 60 s or the turn fails as `Provider stream stalled after the last output item: response.completed timed out after 60000ms` and takes the same-model retry, instead of waiting out the 300 s idle watchdog; open items and pre-first-item silence keep the idle watchdog alone, so long reasoning is never cut ([#1648](https://github.com/code-yeongyu/senpi/issues/1648)).
+- OpenAI Codex and OpenAI Responses WebSocket streams now run a ping/pong liveness heartbeat (ping after 30 s of silence, dead after two unanswered pings), so a half-open connection fails as a provider stall in about 70 s and takes the same-model retry instead of freezing the turn for the full 300 s watchdog; on Bun a parked Codex WebSocket that the server closed is no longer reused (the proxy-aware wrapper now exposes `readyState`, and parked sockets evict themselves on `close`/`error`), which was the deterministic five-minute stall reported on gpt-5.6-sol ([#1648](https://github.com/code-yeongyu/senpi/issues/1648)).
+
+### Removed
+
+## [2026.9.13] - 2026-09-13
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.12-3] - 2026-09-12
+
+### Breaking Changes
+
+### Added
+
+- Added compact, persistable assistant-message frames with `AssistantMessageFrameEncoder` and `reduceAssistantMessageFrames()`; frames preserve the provider thinking level.
+- Added an optional timestamp argument to `uuidv7()` for follower IDs.
+- Enabled native deferred tool loading for Fireworks Messages models. Use `ToolSearch` or `tool_search` as the loader name for prompt-prefix deferral ([#9323](https://github.com/earendil-works/pi/issues/9323)).
+
+### Changed
+
+### Fixed
+
+- Added `RetryPolicy.maxAgentDelayMs` (60s by default) as a hard ceiling on agent-level retry backoff; the fork's retry-profile planner and jitter still compute the delay, and the cap is applied last ([#8826](https://github.com/earendil-works/pi/issues/8826)).
+- Fixed quadratic CPU usage when draining buffered `EventStream` events ([#9055](https://github.com/earendil-works/pi/issues/9055)).
+- Fixed Mistral Medium reasoning requests to use `reasoning_effort` for all reasoning-capable `mistral-medium-*` model IDs instead of the unsupported `prompt_mode` ([#8700](https://github.com/earendil-works/pi/issues/8700)).
+- Fixed Mistral-hosted GLM-5.2 reasoning requests to use `reasoning_effort` instead of the ignored `prompt_mode` ([#9375](https://github.com/earendil-works/pi/issues/9375)).
+- Fixed OpenCode and OpenCode Go requests to send `x-opencode-session` from `sessionId` across all supported API adapters ([#9326](https://github.com/earendil-works/pi/issues/9326)).
+- Fixed OpenAI Codex requests to send the model's Off reasoning effort instead of omitting it, while respecting unsupported Off mappings ([#9191](https://github.com/earendil-works/pi/issues/9191)).
+- Fixed OpenAI Codex SSE parsing to process terminal events that are not followed by a blank line ([#9047](https://github.com/earendil-works/pi/issues/9047)).
+- Fixed Fireworks unsigned thinking replay and reasoning effort selection using catalog metadata, with verified DeepSeek V4 and Qwen3.8 fallbacks and removal of redundant GLM 5.2 and Kimi K3 effort aliases ([#9323](https://github.com/earendil-works/pi/issues/9323)).
+- Fixed OpenRouter Anthropic Messages requests to send `x-session-id` from `sessionId` when prompt caching is enabled, matching the header Chat Completions models already sent ([#9102](https://github.com/earendil-works/pi/issues/9102)).
+- Fixed the DeepSeek catalog to advertise `deepseek-flash` for DeepSeek V4.1 Flash instead of retired Flash aliases, and refreshed DeepSeek pricing metadata ([#9423](https://github.com/earendil-works/pi/issues/9423)).
+- Removed GPT-5.4 and GPT-5.4 mini from the OpenAI Codex catalog after they became unavailable to ChatGPT accounts ([#9394](https://github.com/earendil-works/pi/issues/9394)).
+
+### Removed
+
+## [2026.9.12-2] - 2026-09-12
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+- Cursor model windows now follow the ceiling the server reports. Every conversation checkpoint carries `tokenDetails.maxTokens`, and that observation is recorded per model id, persisted beside the conversation rotation store and preferred over the committed capability table, so a family whose real window is smaller than the table claims no longer sizes requests against a window it does not have ([#1603](https://github.com/code-yeongyu/senpi/issues/1603)).
+
+### Removed
+
+## [2026.9.12] - 2026-09-12
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.11] - 2026-09-11
+
+### Breaking Changes
+
+### Added
+
 - Pooled OAuth credential slots now retain optional human-readable display names while preserving immutable slot identities for selection, affinity, refresh, and failover.
+- Added the Devin (Cognition) Cascade transport: `devin-agent` Connect/protobuf streaming is mapped natively onto the shared stream contract, so text, thinking, tool calls, usage and stop reasons arrive as ordinary events, a failed or content-filtered stop is surfaced as an error instead of a silent end, and a truncated turn keeps the `length` stop reason. Model discovery is authenticated with the stored credential and falls back to the bundled SWE seed when the discovery endpoint is unavailable, so an offline or rate-limited discovery never empties the model list ([#1604](https://github.com/code-yeongyu/senpi/issues/1604)).
+- Added Devin (Cognition) CLI OAuth: the authorization flow is PKCE S256 with a loopback callback on `127.0.0.1:59653` and the state validated before the code is spent, and the issued CLI token is stored with the expiry derived from its own JWT rather than an assumed lifetime ([#1601](https://github.com/code-yeongyu/senpi/issues/1601)).
 
 ### Changed
 

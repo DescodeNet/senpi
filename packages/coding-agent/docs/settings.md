@@ -131,7 +131,7 @@ When this value is anything other than `"auto"`, it overrides any model-level `p
 | `defaultProjectTrust` | string | `"ask"` | Fallback project trust behavior: `"ask"`, `"always"`, or `"never"`. Global setting only |
 | `collapseChangelog` | boolean | `false` | Show condensed changelog after updates |
 | `changelogSeen` | object | - | Internal per-source record of the latest changelog version acknowledged (managed automatically) |
-| `enableInstallTelemetry` | boolean | `true` | Send an anonymous install/update version ping after first install or changelog-detected updates. This does not control update checks |
+| `enableInstallTelemetry` | boolean | `true` | Send the anonymous install/update ping and selected provider attribution headers. This does not control update checks |
 | `enableAnalytics` | boolean | `false` | Opt-in analytics data sharing. Currently only asked for during the experimental first-time setup (`PI_EXPERIMENTAL=1`) |
 | `trackingId` | string | - | Analytics tracking identifier, generated when `enableAnalytics` is turned on |
 | `doubleEscapeAction` | string | `"tree"` | Action for double-escape: `"tree"`, `"fork"`, or `"none"` |
@@ -142,7 +142,7 @@ When this value is anything other than `"auto"`, it overrides any model-level `p
 | `showHardwareCursor` | boolean | `false` | Show the terminal cursor while TUI positions it for IME support |
 | `tuiMode` | string | `"regular"` | Interactive TUI mode: `"regular"` or experimental `"fullscreen"`. Changes from `/settings` apply immediately; `--tui-mode` overrides this setting at startup |
 | `fullscreenExitOutput` | string | `"transcript"` | Fullscreen exit output: `"transcript"` prints the final transcript and resume hint, while `"resume-hint"` restores the previous screen and prints only the resume hint. Has no effect in regular TUI mode |
-| `fullscreenScrollbar` | string | `"auto"` | Fullscreen transcript scrollbar: `"auto"` shows it temporarily while scrolling, `"always"` reserves the rightmost column and keeps it visible, and `"hidden"` hides it. Has no effect in regular TUI mode |
+| `fullscreenScrollbar` | string | `"auto"` | Fullscreen transcript scrollbar: `"auto"` shows it temporarily while scrolling or while the pointer is over its rightmost-column track, `"always"` reserves that column and keeps it visible, and `"hidden"` hides it. Has no effect in regular TUI mode |
 | `fullscreenCopyOnSelect` | boolean | `true` | Automatically copy selected text in fullscreen mode. When disabled, selections stay highlighted and `Ctrl+X` copies the active selection |
 
 For VS Code, include `--wait` so senpi resumes after the editor exits:
@@ -155,7 +155,7 @@ For VS Code, include `--wait` so senpi resumes after the editor exits:
 
 ### Telemetry and update checks
 
-`enableInstallTelemetry` only controls the anonymous install/update ping to `https://pi.dev/api/report-install`. Opting out of telemetry does not disable update checks; senpi can still fetch the latest published `@code-yeongyu/senpi` version from the npm registry (`registry.npmjs.org`).
+`enableInstallTelemetry` controls the anonymous install/update ping to `https://pi.dev/api/report-install` and senpi attribution headers for OpenRouter, NVIDIA NIM, and Cloudflare provider requests. Opting out disables both. It does not disable update checks; senpi can still fetch the latest published `@code-yeongyu/senpi` version from the npm registry (`registry.npmjs.org`).
 
 Set `PI_SKIP_VERSION_CHECK=1` to disable the senpi version update check. Use `--offline` or `PI_OFFLINE=1` to disable all startup network operations described here, including update checks, package update checks, and install/update telemetry.
 
@@ -193,6 +193,7 @@ Set `PI_SKIP_VERSION_CHECK=1` to disable the senpi version update check. Use `--
 | `compaction.reserveTokens` | number | `16384` | Tokens reserved for LLM response |
 | `compaction.keepRecentTokens` | number | `20000` | Recent tokens to keep (not summarized) |
 | `compaction.summarizationMaxDurationMs` | number | adaptive | Wall-clock budget for one summarization attempt: larger of 120s and 2ms per estimated input token, capped at 30min. Set a positive value to override |
+| `compaction.modelOverrides` | object | - | Per-model `reserveTokens` and `keepRecentTokens` overrides keyed by exact `"provider/modelId"` |
 
 ```json
 {
@@ -204,11 +205,42 @@ Set `PI_SKIP_VERSION_CHECK=1` to disable the senpi version update check. Use `--
 }
 ```
 
+#### Per-model compaction overrides
+
+```json
+{
+  "compaction": {
+    "enabled": true,
+    "reserveTokens": 16384,
+    "keepRecentTokens": 20000,
+    "modelOverrides": {
+      "some-provider/big-model": {
+        "reserveTokens": 400000
+      },
+      "local/small-model": {
+        "reserveTokens": 2048,
+        "keepRecentTokens": 4096
+      }
+    }
+  }
+}
+```
+
+Keys match exact, case-sensitive `provider/modelId` values, not names or glob patterns. Model IDs may contain slashes (for example, `openrouter/anthropic/claude-sonnet-4`).
+
+Each token setting resolves independently: matching model override → ordinary `compaction` setting → built-in default. In the example, `some-provider/big-model` keeps the ordinary 20000 recent tokens. Token values must be non-negative safe integers. Invalid values in the matching model override produce an error when read; only omitted fields fall back to the ordinary setting. Model override entries must be objects. Invalid ordinary token settings produce an error when read, even if the active model has a valid override. Only omitted ordinary values use built-in defaults. Zero is accepted, but `reserveTokens: 0` leaves no response margin and also sets the summarization output budget to zero.
+
+Global and project settings merge recursively **before** model lookup. A project can override one field for a model without replacing its other fields or other models. A global model-specific value takes precedence over a project-wide fallback; override the same model entry in the project to change it.
+
+`enabled` is not model-specific. The active model's token settings apply to manual compaction, automatic threshold checks (including between assistant turns), and overflow recovery. Switching models takes effect on the next check or compaction. Configure overrides in JSON; `/settings` retains the ordinary auto-compaction toggle.
+
+See [compaction.md](compaction.md) for trigger and summarization behavior.
+
 ### Branch Summary
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `branchSummary.reserveTokens` | number | `16384` | Tokens reserved for branch summarization |
+| `branchSummary.reserveTokens` | number | `16384` | Tokens reserved when selecting branch history; output is capped at 4096 tokens |
 | `branchSummary.skipPrompt` | boolean | `false` | Skip "Summarize branch?" prompt on `/tree` navigation (defaults to no summary) |
 
 ### Retry
@@ -222,6 +254,7 @@ Set `PI_SKIP_VERSION_CHECK=1` to disable the senpi version update check. Use `--
 | `retry.fallbackChains` | `Record<string, string[]>` | `{}` | Ordered exact model-selector to fallback-selector chains |
 | `retry.fallbackRevertPolicy` | `"cooldown-expiry"` \| `"never"` | `"cooldown-expiry"` | Automatic primary-model restoration policy |
 | `retry.abortServerSideFallback` | boolean | `true` | Abort a turn when the provider substitutes a different model after a classifier decline |
+| `retry.maxAgentDelayMs` | number | `60000` | Hard ceiling on agent-level retry delay (60s), applied after the retry profile and jitter |
 | `retry.provider.timeoutMs` | number | `300000` | Provider/SDK request timeout and stream idle timeout in milliseconds |
 | `retry.provider.streamStartTimeoutMs` | number | `300000` | Maximum wait for the first provider stream event; `0` disables |
 | `retry.provider.streamRetryTimeoutMs` | number | `30000` | First-request liveness cap after a known provider stream/transport timeout; `0` disables the cap |
@@ -229,6 +262,8 @@ Set `PI_SKIP_VERSION_CHECK=1` to disable the senpi version update check. Use `--
 | `retry.provider.maxRetryDelayMs` | number | `60000` | Max server-requested delay honored on the same model before the fallback chain engages (60s) |
 
 A server-requested retry delay at or below `retry.provider.maxRetryDelayMs` is honored on the same model. A longer delay means the model is unavailable rather than busy, so Senpi engages the configured fallback chain instead of waiting, suppressing the primary for the requested duration; the turn fails with an informative error only when no chain candidate can take over.
+
+Agent-level retries use exponential backoff shaped by the retry profile and capped by `retry.maxAgentDelayMs`, so long retry runs stay responsive after prolonged outages.
 
 After an exact provider stream/transport timeout, `retry.provider.streamRetryTimeoutMs` caps the retry's first
 provider request and defers queued user input from that request. The cap applies only to stream guards that are
@@ -242,6 +277,7 @@ Keep `retry.provider.maxRetries` at `0` unless provider-level retries are explic
     "enabled": true,
     "maxRetries": 5,
     "baseDelayMs": 2000,
+    "maxAgentDelayMs": 60000,
     "provider": {
       "timeoutMs": 3600000,
       "streamStartTimeoutMs": 300000,
@@ -350,11 +386,14 @@ Both ambient-auth providers are explicit opt-in: a vendor CLI being logged in on
 | `terminal.showImages` | boolean | `true` | Show images in terminal (if supported) |
 | `terminal.imageWidthCells` | number | `60` | Preferred inline image width in terminal cells |
 | `terminal.clearOnShrink` | boolean | `false` | Clear empty rows when content shrinks (can cause flicker) |
+| `terminal.mouse` | `"off"`, `"whilePending"`, `"always"` | `"whilePending"` | Capture regular-mode clicks while a question is pending; `always` keeps capture active in regular mode, and `off` disables mouse capture in both regular and fullscreen modes. Editable in `/settings`. |
 | `terminal.hyperlinks` | boolean or `"auto"` | `"auto"` | Override OSC 8 hyperlink support (advanced, JSON-only) |
 | `terminal.images` | string or boolean | `"auto"` | Override image protocol support with `"kitty"`, `"iterm2"`, `false`, or `"auto"` (advanced, JSON-only) |
 | `terminal.trueColor` | boolean or `"auto"` | `"auto"` | Override truecolor support (advanced, JSON-only) |
 | `images.autoResize` | boolean | `true` | Resize images to 2000x2000 max. Applies to `@file` attachments, `read`, and images returned by tools |
 | `images.blockImages` | boolean | `false` | Block all images from being sent to LLM |
+
+With `terminal.mouse: "whilePending"`, regular-mode native selection and scrollback are unchanged when no question is pending. During capture, use the terminal's selection bypass or set `"off"`; wheel reports are consumed. Unknown frame placement ignores clicks rather than guessing. See [Mouse Input](tui.md#mouse-input) for bypass modifiers, tmux calibration and the herdr short-frame limitation. This setting does not change `tuiMode`.
 
 ### Prompt Cache
 
@@ -428,15 +467,16 @@ An empty array starts with no built-in tools while preserving extension and SDK 
 
 #### Eval-only tools
 
-Whenever the `eval` tool is available (codemode loaded), `bash`, `powershell`, `workflow` and `monitor` leave the model's direct tool list and run only inside eval cells:
+Whenever the `eval` tool is available (codemode loaded), `bash`, `powershell`, `grep`, `workflow` and `monitor` leave the model's direct tool list and run only inside eval cells:
 
 ```js
 const { output } = await tool.bash({ command: "ls -la" });
+const hits = await tool.grep({ pattern: "TODO", path: "src" });
 const snapshot = await tool.workflow({ action: "snapshot", run_id });
 await tool.monitor({ description: "build", command: "bun run build", filter: "^done" });
 ```
 
-This is the default and has no setting. Hooks and permission checks apply unchanged to calls made this way, and the prompt surfaces that document these tools render the `tool.<name>(` form to match. If the model attempts a direct call anyway, the call returns a hint naming the eval form. When the `eval` tool is unavailable (codemode not loaded, or a child agent whose allowlist omits it), the policy stays inert and all four tools remain directly callable, so shell, workflow and monitor access is never lost.
+This is the default and has no setting. Tools may declare `exposure: "eval"` to join this policy; `bash`, `powershell` and `grep` use that declaration. They remain registered and discoverable through `tool_schema` inside eval. Hooks and permission checks apply unchanged to calls made this way, and the prompt surfaces that document these tools render the `tool.<name>(` form to match. If the model attempts a direct call anyway, the call returns a hint naming the eval form instead of executing the tool. When the `eval` tool is unavailable (codemode not loaded, or a child agent whose allowlist omits it), the policy stays inert and otherwise enabled tools remain directly callable, so shell, text search, workflow and monitor access is never lost.
 
 ### Ask User
 
@@ -444,6 +484,7 @@ This is the default and has no setting. Hooks and permission checks apply unchan
 |---------|------|---------|-------------|
 | `askUser.enabled` | boolean | `true` | Enable the built-in question tool (`request_user_input` / `ask_user_question`) |
 | `askUser.timeoutMinutes` | number | `30` | Idle minutes before an unanswered question times out, clamped to 1–120 |
+| `askUser.bell` | boolean | `true` | Ring the terminal bell once for a newly displayed question; reconnect hydration does not ring |
 
 Disable for one run without changing settings with `--no-ask-user` (wins over `askUser.enabled: true`). `disabledBuiltinExtensions: ["ask-user"]` remains the coarse switch that skips loading the extension.
 
@@ -451,22 +492,37 @@ Disable for one run without changing settings with `--no-ask-user` (wins over `a
 {
   "askUser": {
     "enabled": true,
-    "timeoutMinutes": 30
+    "timeoutMinutes": 30,
+    "bell": true
   }
 }
 ```
+
+While a question is pending, the terminal title shows `? <header>` unless an active tool title takes precedence. Settlement restores the previous title layer. Set `askUser.bell: false` to keep the title and question display without a bell.
 
 ### Sessions
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `sessionDir` | string | - | Directory where session files are stored. Accepts absolute or relative paths, plus `~`. |
+| `sessionShutdownHandlerWarnMs` | number | `2000` | Warn when a single extension's `session_shutdown` handler has run this long. Set to `0` to disable the warning. |
+| `sessionShutdownHandlerTimeoutMs` | number | `10000` | Hard cap for a single extension's `session_shutdown` handler. Set to `0` to disable the cap. |
 
 ```json
 { "sessionDir": ".senpi/sessions" }
 ```
 
 When multiple sources specify a session directory, precedence is `--session-dir`, `SENPI_CODING_AGENT_SESSION_DIR`, then `sessionDir` in settings.json.
+
+#### Shutdown handler budget
+
+senpi bounds each extension's `session_shutdown` handler so one slow extension cannot hold quit, `/reload`, `/new`, `/resume` or a fork hostage. Past `sessionShutdownHandlerWarnMs` it logs one warning naming the extension; at `sessionShutdownHandlerTimeoutMs` it aborts the `signal` that handler received on the event, reports an extension error, and continues teardown with the next handler. The handler itself is not killed - it keeps running until the process exits - so extensions that persist durable state should observe `event.signal`.
+
+```json
+{ "sessionShutdownHandlerWarnMs": 2000, "sessionShutdownHandlerTimeoutMs": 10000 }
+```
+
+Only `session_shutdown` is bounded; other extension events (including ask-user and approval dialogs, which may legitimately wait for minutes) are unaffected.
 
 ### Model Cycling
 

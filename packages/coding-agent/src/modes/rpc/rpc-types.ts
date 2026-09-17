@@ -175,6 +175,7 @@ type RpcSessionCommand =
 export const RPC_ERROR_UNKNOWN_SESSION = "unknown_session";
 export const RPC_ERROR_SESSION_CLOSING = "session_closing";
 export const RPC_ERROR_SESSION_PATH_IN_USE = "session_path_in_use";
+export const RPC_ERROR_SESSION_RESERVATION_LIMIT = "session_reservation_limit";
 export const RPC_ERROR_MISSING_SESSION_ID = "missing_session_id";
 export const RPC_ERROR_MULTI_SESSION_DISABLED = "multi_session_disabled";
 export const RPC_ERROR_INVALID_PATH = "invalid_path";
@@ -191,6 +192,7 @@ export type RpcErrorCode =
 	| typeof RPC_ERROR_UNKNOWN_SESSION
 	| typeof RPC_ERROR_SESSION_CLOSING
 	| typeof RPC_ERROR_SESSION_PATH_IN_USE
+	| typeof RPC_ERROR_SESSION_RESERVATION_LIMIT
 	| typeof RPC_ERROR_MISSING_SESSION_ID
 	| typeof RPC_ERROR_MULTI_SESSION_DISABLED
 	| typeof RPC_ERROR_INVALID_PATH
@@ -215,6 +217,14 @@ export type RpcCommand =
 			modelId?: string;
 			thinkingLevel?: ThinkingLevel;
 			permissionPreset?: string;
+			/**
+			 * Keep this session alive when its last client disconnects (default false).
+			 * The drop only releases that client's attachment: the session stays listed
+			 * with `attachments: 0`, finishes its turn, and is re-attached by a later
+			 * `open_session` for the same `sessionPath`. Requires the host capability
+			 * `retain_on_disconnect`; older hosts ignore the field and close as before.
+			 */
+			retain_on_disconnect?: boolean;
 	  }
 	| { id?: string; type: "close_session"; sessionId: string }
 	| { id?: string; type: "list_sessions" };
@@ -390,6 +400,8 @@ export type RpcResponse =
 					cwd: string;
 					name?: string;
 					status: "opening" | "open" | "closing" | "closed";
+					/** Live client attachments; `0` is a retained session with no client attached. */
+					attachments: number;
 				}>;
 			};
 	  }

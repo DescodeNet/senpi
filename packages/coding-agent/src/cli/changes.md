@@ -1,5 +1,23 @@
 # changes
 
+## 2026-09-16 - Startup spinner draws its first frame synchronously (oh-my-openagent#8371)
+
+### What changed
+
+- `packages/coding-agent/src/cli/startup-loading-indicator.ts`: `start()` writes the first frame itself (hidden cursor + label + phase) and the 120ms grace delay now gates only the animation interval; `resume()` redraws the same way before its grace timer. `setPhase()` therefore renders before any timer fires.
+
+### Why
+
+- The work the indicator covers is synchronous module loading (extension imports through jiti), which starves every timer until it finishes. Measured on a real pty during oh-my-openagent#8371: first spinner byte at 2.27s, a single frame before the TUI replaced it, the whole extension load on a blank terminal. A timer-driven first frame announces work that already ended.
+
+### Why an extension could not handle it
+
+- The indicator runs in the host before any extension is loaded; it is the thing extensions' own load time hides.
+
+### Expected merge conflict zones
+
+- LOW: `start()`, `resume()` and `beginAnimation()` bodies plus the class docstring; `test/startup-loading-indicator.test.ts` grace-delay cases.
+
 ## 2026-09-10 - VENICE_API_KEY in the help output
 
 ### What changed
@@ -386,3 +404,21 @@ The divergence lives in core wiring, package identity, or build plumbing that ex
 ### Expected merge conflict zones on next upstream sync
 
 - LOW: package-command rows in `printHelp()`.
+
+## Upstream sync (upstream/main@71dca871) integration repairs (2026-09-12)
+
+### What changed
+
+- `packages/coding-agent/src/cli/config-selector.ts`: the startup selector builds the fork `TUI` (not upstream's `TuiMainScreen`) on a `ProcessTerminal({ onExternalStdoutWrite: appendHiddenTuiStdout })` and drops the `agentDir` log-directory argument, while taking upstream's `getShowHardwareCursor()` and `setClearOnShrink(getClearOnShrink())` wiring.
+
+### Why
+
+- The fork renderer owns its log directory and routes stray stdout into the hidden TUI log; the startup selector must match `createStartupTui` so both startup paths behave the same.
+
+### Why an extension could not handle it
+
+- The selector runs before any session or extension exists.
+
+### Expected merge conflict zones
+
+- LOW: the `new TUI(...)`/`new ProcessTerminal(...)` construction in `showConfigSelector`.

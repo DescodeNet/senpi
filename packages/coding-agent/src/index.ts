@@ -179,6 +179,12 @@ export {
 	wrapRegisteredTool,
 	wrapRegisteredTools,
 } from "./core/extensions/index.ts";
+export {
+	type ExtensionKernelTools,
+	type KernelToolInvokeOptions,
+	type KernelToolInvokeScope,
+	kernelToolsStorage,
+} from "./core/extensions/kernel-tools-context.ts";
 // Notice primitives
 export {
 	buildNoticeBox,
@@ -274,6 +280,7 @@ export {
 	type ThinkingLevelChangeEntry,
 } from "./core/session-manager.ts";
 export {
+	type CompactionModelOverride,
 	type CompactionSettings,
 	type DefaultProjectTrust,
 	type FullscreenExitOutput,
@@ -399,6 +406,7 @@ export {
 	BranchSummaryMessageComponent,
 	CompactionSummaryMessageComponent,
 	CustomEditor,
+	type CustomEditorOptions,
 	CustomMessageComponent,
 	DynamicBorder,
 	ExtensionEditorComponent,
